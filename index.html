@@ -461,6 +461,10 @@ tr.opp td:first-child{opacity:.85}
 .mk.new{color:var(--accent)}
 table[data-sid="inj-top"] td:last-child,table[data-sid="inj-top"] th:last-child{text-align:left}
 
+/* cash tab */
+table[data-sid="cash-core"] td,table[data-sid="cash-core"] th{text-align:left}
+table[data-sid="cash"] td:first-child,table[data-sid="cash"] th:first-child{text-align:left}
+
 </style>
 </head>
 <body>
@@ -3674,7 +3678,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     out.forEach(function (o) { if (o.own != null) o.own = Math.max(0, Math.min(1, o.own * scale)); });
     var ownSum = sum * scale;
     if (c.own >= 0 && ownSum >= 8.6 && ownSum <= 9.4) warnings.push('Ownership sums to ' + (ownSum * 100).toFixed(0) + '%, which looks like a FanDuel file (9 roster spots sum to 900%). DraftKings classic sums to 800%. Check that this is the DraftKings export.');
-    else if (c.own >= 0 && ownSum < 1) warnings.push('The ownership column is empty or all zero (sums to ' + (ownSum * 100).toFixed(0) + '%). Its projections are used; field ownership comes from the model estimate until a file with ownership is loaded.');
+    else if (c.own >= 0 && ownSum < 1) warnings.push('The ownership column is empty or all zero (sums to ' + (ownSum * 100).toFixed(0) + '%). Its projections are used, and field ownership is estimated from those projections (about 2 points average error in testing, chalk understated) until a file with ownership is loaded.');
     else if (c.own >= 0 && (ownSum < 6 || ownSum > 10)) warnings.push('Ownership sums to ' + (ownSum * 100).toFixed(0) + '% (a full classic slate sums to 800%).');
     var cols = {}; Object.keys(c).forEach(function (k) { if (c[k] >= 0) cols[k] = rows[0][c[k]]; });
     return { cols: cols, rows: out, ownSum: ownSum, warnings: warnings };
@@ -3725,10 +3729,40 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   }
 
   // Field ownership for the slate: the file where present, the model estimate for the rest, scaled so the total stays 8.0.
+  /* Ownership from a projections file that carries no ownership. The field builds off consensus projections, so value and
+     projection rank explain most of real ownership. Fitted on real main-slate GPP ownership in the Warehouse (310 slates,
+     2024-25 to 2026-27): on held-out slates MAE 2.0 points and correlation 0.85, against 3.4 and 0.58 for the no-file model
+     and 1.4 and 0.93 for a professional ownership projection. Chalk is still understated: real 20%+ plays average 29% here.
+     players: [{ id, sal, pos, proj }] with proj 0 for anyone out. Returns { id: share 0..1 }, summing to 8. */
+  var OWN_B = [5.6028, 0.4605, 0.7552, 0.5985, -1.1533, -0.3728, -0.0649, -0.8917, 1.0367, 0.8106];
+  function ownFromProj(players) {
+    var act = players.filter(function (p) { return p.proj > 0 && p.sal > 0; }), out = {}, n = players.length;
+    players.forEach(function (p) { out[p.id] = 0; });
+    if (act.length < 8) return out;
+    var ms = function (f) { var m = 0, v = 0; act.forEach(function (p) { m += f(p); }); m /= act.length; act.forEach(function (p) { v += (f(p) - m) * (f(p) - m); }); return [m, Math.sqrt(v / act.length) || 1]; };
+    var val = function (p) { return p.proj / p.sal * 1000; }, pj = function (p) { return p.proj; }, mv = ms(val), mp = ms(pj), z = function (x, m) { return Math.max(-3, Math.min(3.5, (x - m[0]) / m[1])); };
+    var rk = {}, byPos = {}; act.forEach(function (p) { var k = String(p.pos || '').split('/')[0]; (byPos[k] = byPos[k] || []).push(p); });
+    Object.keys(byPos).forEach(function (k) { byPos[k].sort(function (a, b) { return val(b) - val(a); }).forEach(function (p, i) { rk[p.id] = i + 1; }); });
+    var tot = 0, B = OWN_B, ln = Math.log(Math.max(2, n));
+    act.forEach(function (p) {
+      var vz = z(val(p), mv), pz = z(pj(p), mp), r = rk[p.id];
+      var lin = B[0] + B[1] * vz + B[2] * pz + B[3] * Math.max(vz - 1, 0) + B[4] * Math.max(vz - 2, 0) + (p.sal >= 8000 ? B[5] : 0) + (p.sal < 4000 ? B[6] : 0) + B[7] * ln + (r === 1 ? B[8] : 0) + (r === 2 || r === 3 ? B[9] : 0);
+      out[p.id] = Math.max(0, Math.exp(lin) - 0.3); tot += out[p.id];
+    });
+    for (var it = 0; it < 4 && tot > 0; it++) { var t2 = 0; act.forEach(function (p) { out[p.id] = Math.min(0.70, out[p.id] * (it === 0 ? 8 / tot : 1)); t2 += out[p.id]; }); if (t2 > 0) act.forEach(function (p) { out[p.id] *= 8 / t2; }); tot = 8; }
+    act.forEach(function (p) { out[p.id] = Math.min(0.75, out[p.id]); });
+    return out;
+  }
   function fieldOwnership(slate, extMatch, ownModel, ctx) {
     var out = {}, fileSum = 0, estSum = 0, est = (ownModel && ownModel.players) || {};
     // a file with no ownership (column missing, empty or all zero) is projections only: ownership comes from the model for everyone
-    if (extMatch) { var tot = 0, nOwn = 0; Object.keys(extMatch.byDk || {}).forEach(function (id) { var e0 = extMatch.byDk[id]; if (e0 && e0.own != null) { tot += +e0.own || 0; nOwn++; } }); if (!nOwn || tot < 1) extMatch = null; }
+    if (extMatch) { var tot = 0, nOwn = 0; Object.keys(extMatch.byDk || {}).forEach(function (id) { var e0 = extMatch.byDk[id]; if (e0 && e0.own != null) { tot += +e0.own || 0; nOwn++; } }); if (!nOwn || tot < 1) {
+        // projections but no ownership: estimate ownership from the file's projections (fitted), not from the no-file model
+        var np0 = (ctx && ctx.news && ctx.news.players) || {}, pl = [], nProj = 0;
+        (slate.players || []).forEach(function (p) { var e1 = extMatch.byDk[p.dkId], pr = e1 && e1.proj != null && isFinite(+e1.proj) ? +e1.proj : 0, nw = np0[p.dkId]; if (nw && nw.pPlay != null && +nw.pPlay <= 0.05) pr = 0; if (pr > 0) nProj++; pl.push({ id: p.dkId, sal: +p.salary || 0, pos: p.pos || '', proj: pr }); });
+        if (nProj >= 20) { var op = ownFromProj(pl), o2 = {}; Object.keys(op).forEach(function (id) { o2[id] = { own: op[id], src: 'proj' }; }); return o2; }
+        extMatch = null;
+      } }
     (slate.players || []).forEach(function (p) {
       var e = extMatch && extMatch.byDk[p.dkId];
       if (e && e.own != null) { out[p.dkId] = { own: e.own, src: 'file' }; fileSum += e.own; }
@@ -3768,7 +3802,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     ctx.log = log;
   }
 
-  var API = { parse: parse, match: match, fieldOwnership: fieldOwnership, norm: norm, parseCSV: parseCSV };
+  var API = { parse: parse, match: match, fieldOwnership: fieldOwnership, ownFromProj: ownFromProj, norm: norm, parseCSV: parseCSV };
   G.NBAExt = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
 })();
@@ -3776,19 +3810,20 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 <script id="engine-src">/* NBA DK Sim Lab engine. Possession-level rotation simulation. No deps, no DOM. */
 (function (root) {
   'use strict';
-  var VERSION = '1.4.1';
+  var VERSION = '1.4.3';
   var PARAMS = /*PARAMS*/{
     hlRate: 40, prevWRate: 0.7, shrinkPoss: 60, k2: 60, k3: 120, kft: 40,
-    hlMin: 6, prevWMin: 0.5, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
+    hlMin: 3, prevWMin: 0.5, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
     benchSdA: 12.5, benchSdK: -1.26, benchSdLo: 6, minSdLo: 3.5, minSdHi: 8.5, stUp: 0.7, stDn: 1.3,
     usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.28, vsPow: 1.0, vsMin: 0.55,
     paceSd: 4.0, effSd: 0.06, effRho: 0.15, homeEdge: 1.3, ratingBlend: 0.5, paceShareMkt: 0, paceShareNoMkt: 0,
-    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
+    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
     hlRot: 3, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, hlRateYoung: 40, youngG: 100,
     noNewsMiss: [1, 0.5, 0.3, 0.15, 0.1, 0.06],
-    curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: 0,
+    curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: -0.5,
     pilotSims: 150, pilotPasses: 3, pilotFrac: 0.04, pilotMax: 400, postRescale: 0.03, maxCand: 16, fpScale: 1.0
   }/*PARAMS*/;
+  var XCAL = { 2: [0.972, 0.038], 2.5: [0.982, 0.033], 3: [0.979, 0.036], 3.5: [0.967, 0.043], 4: [0.943, 0.051], 4.5: [0.905, 0.058], 5: [0.853, 0.064], 5.5: [0.794, 0.056], 6: [0.753, 0.044], 6.5: [0.746, 0.027], 7: [0.734, 0.015], 7.5: [0.707, 0.010], 8: [0.669, 0.005] };   // [slope, intercept] per value mark
   var BACKTEST = /*BT*/{"window": ["2025-12-01", "2026-11-09"], "sampling": "every game date, regular season, 300 sims per game", "filter": "players with projected minutes >= 10 and prior history", "oracleActives": {"n": 21489, "nDates": 145, "minutesMAE": 4.487, "minutesMAE_last5": 5.201, "minutesMAE_lastGame": 5.927, "minutesMAE_seasonAvg": 5.436, "fpMAE": 7.584, "fpRMSE": 9.607, "fpBias": 0.174, "fpCorr": 0.7391, "fpMAE_seasonAvg": 8.229, "fpMAE_last10": 8.196, "fpMAE_rateXlast5min": 8.105, "fpRMSE_seasonAvg": 10.532, "fpRMSE_last10": 10.465, "fpRMSE_rateXlast5min": 10.358, "coverageBelow": {"p10": 0.096, "p25": 0.248, "p50": 0.489, "p75": 0.755, "p90": 0.909}, "inside_p10_p90": 0.813, "biasByProjTier": {"proj<15": 0.607, "proj15-25": 0.113, "proj25-35": -0.185, "proj35-45": 0.298, "proj45+": 0.063, "proj35+": 0.239}}, "noNews": {"n": 21344, "nDates": 145, "minutesMAE": 7.41, "minutesMAE_last5": 7.402, "minutesMAE_lastGame": 7.766, "minutesMAE_seasonAvg": 7.624, "fpMAE": 9.778, "fpRMSE": 12.713, "fpBias": 0.176, "fpCorr": 0.5863, "fpMAE_seasonAvg": 10.314, "fpMAE_last10": 10.327, "fpMAE_rateXlast5min": 10.185, "fpRMSE_seasonAvg": 13.67, "fpRMSE_last10": 13.681, "fpRMSE_rateXlast5min": 13.486, "coverageBelow": {"p10": 0.111, "p25": 0.249, "p50": 0.456, "p75": 0.715, "p90": 0.881}, "inside_p10_p90": 0.771, "biasByProjTier": {"proj<15": -0.124, "proj15-25": -0.508, "proj25-35": 0.776, "proj35-45": 1.965, "proj45+": 2.772, "proj35+": 2.125}}, "games": {"n": 1086, "totalMAE": 15.32, "totalBias": 2.08, "marginMAE": 11.08, "nSpread": 1085, "spreadMarginMAE": 11.07, "marginSdSim": 14.16, "marginSdActualVsSpread": 14.21, "subWindowsPerTeam": 10.29, "pOTsim": 0.0377}, "earlySeason": {"definition": "team has played fewer than 15 games this season; covers Oct 21 to about Nov 20 2025 and Oct 20 to Nov 9 2026", "oracleActives": {"n": 7405, "nDates": 54, "dates": ["2025-10-21", "2026-11-09"], "minutesMAE": 4.408, "minutesMAE_last5": 5.375, "fpMAE": 7.622, "fpRMSE": 9.734, "fpBias": 0.066, "fpCorr": 0.7551, "fpMAE_seasonAvg": 8.149, "fpMAE_last10": 8.456, "fpMAE_rateXlast5min": 8.332, "inside_p10_p90": 0.811, "biasByProjTier": {"proj<15": 0.608, "proj15-25": 0.501, "proj25-35": -0.552, "proj35-45": -1.053, "proj45+": -0.528, "proj35+": -0.918}, "minBiasByProjTier": {"proj<15": -0.152, "proj15-25": 0.071, "proj25-35": -0.1, "proj35-45": -0.383, "proj45+": 0.053, "proj35+": -0.27}, "seasonAvg34plus_minBias": -0.038, "seasonAvg34plus_n": 695}, "noNews": {"n": 7140, "nDates": 54, "dates": ["2025-10-21", "2026-11-09"], "minutesMAE": 7.19, "minutesMAE_last5": 7.473, "fpMAE": 9.631, "fpRMSE": 12.573, "fpBias": 0.139, "fpCorr": 0.6215, "fpMAE_seasonAvg": 10.059, "fpMAE_last10": 10.371, "fpMAE_rateXlast5min": 10.291, "inside_p10_p90": 0.779, "biasByProjTier": {"proj<15": -0.061, "proj15-25": -0.17, "proj25-35": 0.62, "proj35-45": 0.479, "proj45+": 1.149, "proj35+": 0.626}, "minBiasByProjTier": {"proj<15": -0.63, "proj15-25": -0.191, "proj25-35": 1.138, "proj35-45": 0.854, "proj45+": 1.716, "proj35+": 1.043}, "seasonAvg34plus_minBias": -2.039, "seasonAvg34plus_n": 673}}, "recent2026_27": {"definition": "most recent period, 2026-27 dates only (2026-10-20 to 2026-11-09). Parameters were tuned on windows that include these dates; this is not a true holdout", "oracleActives": {"n": 3037, "nDates": 20, "dates": ["2026-10-20", "2026-11-09"], "minutesMAE": 4.387, "minutesMAE_last5": 5.51, "fpMAE": 7.512, "fpRMSE": 9.515, "fpBias": 0.386, "fpCorr": 0.7551, "fpMAE_seasonAvg": 8.262, "fpMAE_last10": 8.561, "fpMAE_rateXlast5min": 8.391, "inside_p10_p90": 0.815, "biasByProjTier": {"proj<15": 0.601, "proj15-25": 0.86, "proj25-35": -0.083, "proj35-45": -0.678, "proj45+": 0.513, "proj35+": -0.409}, "minBiasByProjTier": {"proj<15": -0.382, "proj15-25": 0.24, "proj25-35": 0.004, "proj35-45": -0.471, "proj45+": -0.057, "proj35+": -0.377}, "seasonAvg34plus_minBias": 0.03, "seasonAvg34plus_n": 252}, "noNews": {"n": 2902, "nDates": 20, "dates": ["2026-10-20", "2026-11-09"], "minutesMAE": 7.223, "minutesMAE_last5": 7.537, "fpMAE": 9.595, "fpRMSE": 12.398, "fpBias": 0.518, "fpCorr": 0.6147, "fpMAE_seasonAvg": 10.017, "fpMAE_last10": 10.35, "fpMAE_rateXlast5min": 10.233, "inside_p10_p90": 0.776, "biasByProjTier": {"proj<15": 0.032, "proj15-25": 0.223, "proj25-35": 0.879, "proj35-45": 1.629, "proj45+": 2.551, "proj35+": 1.808}, "minBiasByProjTier": {"proj<15": -0.98, "proj15-25": 0.033, "proj25-35": 1.19, "proj35-45": 1.086, "proj45+": 2.336, "proj35+": 1.329}, "seasonAvg34plus_minBias": -2.22, "seasonAvg34plus_n": 244}}, "inSampleNote": "oracleActives, noNews, earlySeason and recent2026_27 blocks are in-sample for the parameters tuned in rounds 1 and 2. round3.holdout is later in time than the round 3 fit window", "note": "oracle = actual actives and starters known. noNews = roster guessed from last 5 team games, no injury feed. Live accuracy sits between and depends on news quality. Salaries in backtest are a proxy (200 x last-10 FP).", "round3": {"definition": "train = 2025-12-01 to 2026-03-31, holdout = 2026-04-01 to 2026-11-09 (end of 2025-26 plus 2026-27). Oracle actives, every date, 1000 sims per game. Round 3 parameters were selected on train-window metrics from every-3rd-date runs; holdout numbers were printed during tuning, so the holdout is later in time but not blind.", "holdout": {"before_v1_1": {"n": 4718, "nGames": 250, "fpMAE": 7.812, "fpRMSE": 9.946, "fpBias": 0.28, "fpMAE_seasonAvg": 8.928, "fpMAE_last10": 8.97, "fpMAE_rateXlast5min": 8.86, "minutesMAE": 4.67, "minutesMAE_last5": 5.807, "below_p10": 0.098, "above_p90": 0.088, "above_p95": 0.037, "above_p99": 0.006, "inside_p10_p90": 0.814, "blowoutSim": 0.225, "blowoutActual": 0.284, "otSim": 0.025, "otActual": 0.04, "marginMAE": 11.15, "paceMAE": 3.64, "tailByTier": {"<15": {"n": 1049, "bias": -0.18, "below_p10": 0.074, "above_p90": 0.099, "above_p95": 0.047, "above_p99": 0.008}, "15-25": {"n": 1641, "bias": 0.32, "below_p10": 0.108, "above_p90": 0.09, "above_p95": 0.04, "above_p99": 0.007}, "25-35": {"n": 1262, "bias": 0.42, "below_p10": 0.096, "above_p90": 0.081, "above_p95": 0.029, "above_p99": 0.004}, "35-45": {"n": 590, "bias": 0.25, "below_p10": 0.108, "above_p90": 0.086, "above_p95": 0.032, "above_p99": 0.007}, "45+": {"n": 176, "bias": 1.86, "below_p10": 0.136, "above_p90": 0.063, "above_p95": 0.028, "above_p99": 0.006}}, "spreadBands": [{"band": "0-3", "n": 52, "market": 1.89, "sim": 1.61, "actual": 1.52, "simBlow": 0.163, "actBlow": 0.212}, {"band": "3-6", "n": 63, "market": 4.34, "sim": 3.75, "actual": 7.86, "simBlow": 0.178, "actBlow": 0.238}, {"band": "6-9", "n": 51, "market": 7.23, "sim": 6.44, "actual": 8.25, "simBlow": 0.203, "actBlow": 0.275}, {"band": "9-12", "n": 29, "market": 10.33, "sim": 9.29, "actual": 14.97, "simBlow": 0.248, "actBlow": 0.241}, {"band": "12-99", "n": 55, "market": 15.64, "sim": 13.66, "actual": 18.11, "simBlow": 0.344, "actBlow": 0.436}]}, "after_v1_2": {"n": 4872, "nGames": 250, "fpMAE": 7.76, "fpRMSE": 9.87, "fpBias": 0.068, "fpMAE_seasonAvg": 8.879, "fpMAE_last10": 8.92, "fpMAE_rateXlast5min": 8.791, "minutesMAE": 4.673, "minutesMAE_last5": 5.831, "below_p10": 0.098, "above_p90": 0.093, "above_p95": 0.043, "above_p99": 0.007, "inside_p10_p90": 0.809, "blowoutSim": 0.244, "blowoutActual": 0.284, "otSim": 0.038, "otActual": 0.04, "marginMAE": 10.99, "paceMAE": 3.63, "tailByTier": {"<15": {"n": 1149, "bias": 0.26, "below_p10": 0.067, "above_p90": 0.087, "above_p95": 0.047, "above_p99": 0.006}, "15-25": {"n": 1794, "bias": 0.1, "below_p10": 0.115, "above_p90": 0.104, "above_p95": 0.048, "above_p99": 0.007}, "25-35": {"n": 1204, "bias": -0.29, "below_p10": 0.096, "above_p90": 0.086, "above_p95": 0.036, "above_p99": 0.008}, "35-45": {"n": 559, "bias": -0.07, "below_p10": 0.098, "above_p90": 0.091, "above_p95": 0.029, "above_p99": 0.007}, "45+": {"n": 166, "bias": 1.51, "below_p10": 0.151, "above_p90": 0.072, "above_p95": 0.048, "above_p99": 0.006}}, "spreadBands": [{"band": "0-3", "n": 52, "market": 1.89, "sim": 1.9, "actual": 1.52, "simBlow": 0.167, "actBlow": 0.212}, {"band": "3-6", "n": 63, "market": 4.34, "sim": 4.36, "actual": 7.86, "simBlow": 0.189, "actBlow": 0.238}, {"band": "6-9", "n": 51, "market": 7.23, "sim": 7.26, "actual": 8.25, "simBlow": 0.217, "actBlow": 0.275}, {"band": "9-12", "n": 29, "market": 10.33, "sim": 10.37, "actual": 14.97, "simBlow": 0.272, "actBlow": 0.241}, {"band": "12-99", "n": 55, "market": 15.64, "sim": 15.69, "actual": 18.11, "simBlow": 0.391, "actBlow": 0.436}]}}, "train": {"before_v1_1": {"n": 16177, "nGames": 836, "fpMAE": 7.572, "fpRMSE": 9.595, "fpBias": 0.321, "fpMAE_seasonAvg": 8.089, "fpMAE_last10": 8.034, "fpMAE_rateXlast5min": 7.95, "minutesMAE": 4.45, "minutesMAE_last5": 4.999, "below_p10": 0.09, "above_p90": 0.08, "above_p95": 0.034, "above_p99": 0.005, "inside_p10_p90": 0.83, "blowoutSim": 0.217, "blowoutActual": 0.23, "otSim": 0.025, "otActual": 0.041, "marginMAE": 11.15, "paceMAE": 3.37, "tailByTier": {"<15": {"n": 3596, "bias": 0.08, "below_p10": 0.083, "above_p90": 0.1, "above_p95": 0.047, "above_p99": 0.007}, "15-25": {"n": 5909, "bias": 0.24, "below_p10": 0.091, "above_p90": 0.081, "above_p95": 0.035, "above_p99": 0.006}, "25-35": {"n": 4033, "bias": 0.37, "below_p10": 0.094, "above_p90": 0.07, "above_p95": 0.029, "above_p99": 0.004}, "35-45": {"n": 1929, "bias": 0.9, "below_p10": 0.094, "above_p90": 0.069, "above_p95": 0.026, "above_p99": 0.004}, "45+": {"n": 710, "bias": 0.36, "below_p10": 0.089, "above_p90": 0.051, "above_p95": 0.021, "above_p99": 0.003}}, "spreadBands": [{"band": "0-3", "n": 161, "market": 1.82, "sim": 1.7, "actual": 0.98, "simBlow": 0.166, "actBlow": 0.186}, {"band": "3-6", "n": 219, "market": 4.26, "sim": 3.84, "actual": 2.89, "simBlow": 0.178, "actBlow": 0.146}, {"band": "6-9", "n": 190, "market": 7.22, "sim": 6.41, "actual": 7.81, "simBlow": 0.205, "actBlow": 0.226}, {"band": "9-12", "n": 120, "market": 10.13, "sim": 8.91, "actual": 8.43, "simBlow": 0.242, "actBlow": 0.2}, {"band": "12-99", "n": 145, "market": 14.79, "sim": 13, "actual": 15.84, "simBlow": 0.328, "actBlow": 0.428}]}, "after_v1_2": {"n": 16625, "nGames": 836, "fpMAE": 7.521, "fpRMSE": 9.513, "fpBias": 0.194, "fpMAE_seasonAvg": 8.043, "fpMAE_last10": 7.99, "fpMAE_rateXlast5min": 7.909, "minutesMAE": 4.426, "minutesMAE_last5": 5.022, "below_p10": 0.092, "above_p90": 0.088, "above_p95": 0.04, "above_p99": 0.007, "inside_p10_p90": 0.82, "blowoutSim": 0.234, "blowoutActual": 0.23, "otSim": 0.038, "otActual": 0.041, "marginMAE": 11.11, "paceMAE": 3.37, "tailByTier": {"<15": {"n": 3837, "bias": 0.69, "below_p10": 0.083, "above_p90": 0.093, "above_p95": 0.045, "above_p99": 0.008}, "15-25": {"n": 6323, "bias": 0.09, "below_p10": 0.102, "above_p90": 0.095, "above_p95": 0.043, "above_p99": 0.007}, "25-35": {"n": 3993, "bias": -0.1, "below_p10": 0.089, "above_p90": 0.082, "above_p95": 0.038, "above_p99": 0.008}, "35-45": {"n": 1837, "bias": 0.25, "below_p10": 0.084, "above_p90": 0.075, "above_p95": 0.025, "above_p99": 0.004}, "45+": {"n": 635, "bias": -0.07, "below_p10": 0.079, "above_p90": 0.054, "above_p95": 0.025, "above_p99": 0.003}}, "spreadBands": [{"band": "0-3", "n": 161, "market": 1.82, "sim": 1.83, "actual": 0.98, "simBlow": 0.169, "actBlow": 0.186}, {"band": "3-6", "n": 219, "market": 4.26, "sim": 4.28, "actual": 2.89, "simBlow": 0.183, "actBlow": 0.146}, {"band": "6-9", "n": 190, "market": 7.22, "sim": 7.25, "actual": 7.81, "simBlow": 0.218, "actBlow": 0.226}, {"band": "9-12", "n": 120, "market": 10.13, "sim": 10.16, "actual": 8.43, "simBlow": 0.27, "actBlow": 0.2}, {"band": "12-99", "n": 145, "market": 14.79, "sim": 14.83, "actual": 15.84, "simBlow": 0.371, "actBlow": 0.428}]}}}, "round5": {"definition": "v1.2.0 to v1.3.0: spot-starter minutes, with/without fix, questionable starters, garbage-time refit, deep bench garbage minutes, trailing-team bump 0.45 to 0.40. Same train and holdout windows as round3, 1000 sims. marketBlend is not exercised by the backtest (untested).", "train": {"before_v1_2_0": {"fpMAE": 7.566, "fpBias": 0.218, "minutesMAE": 4.484, "under15TierBias": 0.62, "tier35_45Bias": 0.18, "tier45Bias": -0.53, "benchPickFpBias": 1.12, "startersSpread0_3MinBias": -0.54, "startersSpread12MinBias": 0.58, "blowoutSim": 0.222, "blowoutActual": 0.23, "blowout12Sim": 0.363, "blowout12Actual": 0.428, "spotStarters": {"n": 504, "minMAE": 4.93, "minBias": -0.15, "fpMAE": 7.99, "fpBias": 1.01}, "lostTeammate": {"n": 1450, "minMAE": 4.87, "minBias": 0.05, "fpMAE": 8.11, "fpBias": 0.5}}, "after_v1_3_0": {"fpMAE": 7.521, "fpBias": 0.194, "minutesMAE": 4.426, "under15TierBias": 0.69, "tier35_45Bias": 0.25, "tier45Bias": -0.07, "benchPickFpBias": 0.88, "startersSpread0_3MinBias": -0.33, "startersSpread12MinBias": 0.31, "blowoutSim": 0.234, "blowoutActual": 0.23, "blowout12Sim": 0.371, "blowout12Actual": 0.428, "spotStarters": {"n": 504, "minMAE": 4.99, "minBias": 0.04, "fpMAE": 7.96, "fpBias": 1.15}, "lostTeammate": {"n": 1465, "minMAE": 4.66, "minBias": -0.03, "fpMAE": 7.94, "fpBias": 0.43}}}, "holdout": {"before_v1_2_0": {"fpMAE": 7.787, "fpBias": 0.119, "minutesMAE": 4.684, "under15TierBias": 0.21, "tier35_45Bias": -0.33, "tier45Bias": 1.13, "benchPickFpBias": 1.28, "startersSpread0_3MinBias": 0.52, "startersSpread12MinBias": 1.18, "blowoutSim": 0.233, "blowoutActual": 0.284, "blowout12Sim": 0.388, "blowout12Actual": 0.436, "spotStarters": {"n": 203, "minMAE": 5.19, "minBias": 0.82, "fpMAE": 7.51, "fpBias": 0.06}, "lostTeammate": {"n": 552, "minMAE": 5.42, "minBias": 0.18, "fpMAE": 8.7, "fpBias": -0.24}}, "after_v1_3_0": {"fpMAE": 7.76, "fpBias": 0.068, "minutesMAE": 4.673, "under15TierBias": 0.26, "tier35_45Bias": -0.07, "tier45Bias": 1.51, "benchPickFpBias": 0.9, "startersSpread0_3MinBias": 0.62, "startersSpread12MinBias": 0.8, "blowoutSim": 0.244, "blowoutActual": 0.284, "blowout12Sim": 0.391, "blowout12Actual": 0.436, "spotStarters": {"n": 203, "minMAE": 5.54, "minBias": 1.07, "fpMAE": 7.95, "fpBias": 0.25}, "lostTeammate": {"n": 559, "minMAE": 5.33, "minBias": 0.09, "fpMAE": 8.65, "fpBias": -0.29}}}, "starterMinutesByMargin": {"real": [{"m": "0-10", "n": 2298, "all": 1.08, "win": 1.14, "lose": 1.03, "projAll": -0.25}, {"m": "10-20", "n": 1656, "all": -0.8, "win": -0.72, "lose": -0.89, "projAll": -1.27}, {"m": "20-30", "n": 797, "all": -3.47, "win": -3.86, "lose": -3.02, "projAll": -2.46}, {"m": "30-99", "n": 363, "all": -5.2, "win": -5.08, "lose": -5.36, "projAll": -2.4}], "sim_v1_3_0": [{"m": "0-10", "share": 0.435, "all": 1.53, "win": 1.48, "lose": 1.58}, {"m": "10-20", "share": 0.333, "all": -0.04, "win": -0.2, "lose": 0.14}, {"m": "20-30", "share": 0.162, "all": -2.24, "win": -2.57, "lose": -1.85}, {"m": "30+", "share": 0.07, "all": -4.16, "win": -4.77, "lose": -3.4}]}}}/*BT*/;
   var NS = 12; // min pts reb ast stl blk tov tpm fga fta plays onPlays
 
@@ -4053,6 +4088,16 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       var prS = Math.min(36, Math.max(mAll + 5, P.stPrior)), prB = Math.min(mAll, 28);
       m.muS = (mS + 2 * prS) / (wS + 2); m.muB = (mB + 2 * prB) / (wB + 2);
       m.pStartHist = wSt > 0 ? sSt / wSt : 0;
+      // Salary check on minutes. DraftKings prices carry information the box scores do not: players the sim liked at 6x+ salary ran
+      // 3.6 to 4.2 DK points and about 3 minutes under projection (lockI replay with real salaries, 310 slates). Minutes are pulled
+      // toward what the salary implies at his own DK points per minute, by salShrink. Skipped for synthetic backtest salaries.
+      if (P.salShrink > 0 && +sp.salary > 0 && !sp.salSyn) {
+        var sd_ = 0, sm_ = 0, sn_ = 0; for (j = rows.length - 1; j >= 0 && sn_ < 20; j--) if (rows[j].min > 0 && rows[j].dk != null) { sd_ += +rows[j].dk; sm_ += rows[j].min; sn_++; }
+        if (sn_ >= 5 && sd_ > 0 && sm_ > 0) {
+          var sal_ = +sp.salary, impFp = Math.max(0, -9.139 + 0.006936 * sal_ - 1.16008e-7 * sal_ * sal_), iMin = Math.max(3, Math.min(38, impFp / (sd_ / sm_)));
+          m.salMin = iMin; m.muS = Math.max(0, m.muS + P.salShrink * (iMin - m.muS)); m.muB = Math.max(0, m.muB + P.salShrink * (iMin - m.muB)); m.muAll = Math.max(0, m.muAll + P.salShrink * (iMin - m.muAll));
+        }
+      }
       // rotation participation and recent availability
       var wr = 0, sr = 0; k = 0;
       for (j = rows.length - 1; j >= 0 && k < 15; j--) {
@@ -4136,7 +4181,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       var f = function () { return new Float64Array(n); };
       T.pPlay = f(); T.pStart = f(); T.pRot = f(); T.muS = f(); T.muB = f(); T.muAll = f(); T.rec = f();
       T.astW = f(); T.orbW = f(); T.drbW = f(); T.vs = f(); T.plays = f(); T.cT = f(); T.cF = f(); T.c3 = f(); T.p2 = f(); T.p3 = f(); T.pft = f(); T.ast = f(); T.orb = f(); T.drb = f(); T.stl = f(); T.blk = f(); T.fgShare = f();
-      T.posSim = new Float64Array(n * n); T.wowy = new Float64Array(n * n);
+      T.posSim = new Float64Array(n * n); T.wowy = new Float64Array(n * n); T.wb1 = new Float64Array(n); T.wbn = new Float64Array(n);
       var rating = teamRating(abbr); T.rating = rating;
       var b2b = rating.last && dayDiff(date, rating.last) === 1; T.b2b = b2b;
       for (var i = 0; i < n; i++) {
@@ -4170,7 +4215,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
             if (gm[jx][gid] > 0) { sw += mi; nw_++; stw += gs_[i][gid]; } else { so += mi; no++; sto += gs_[i][gid]; }
           }
           if (no >= 1 && nw_ >= 3) {
-            var d = (so / no - sw / nw_) * no / (no + 3); T.wowy[jx * n + i] = Math.max(-4, Math.min(P.wowyFix ? 14 : 12, d));
+            var d = (so / no - sw / nw_) * no / (no + P.wowyK); T.wowy[jx * n + i] = Math.max(-4, Math.min(P.wowyFix ? 14 : 12, d));
             if (P.wowyFix && P.wowyStart) T.wowySt[jx * n + i] = (sto / no - stw / nw_) * no / (no + 3);
           }
         }
@@ -4203,6 +4248,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       for (i = 0; i < n; i++) if (act[i] && !T.isSt[i] && cnt > 8 && rnd() >= T.pRot[i]) { act[i] = 0; cnt--; if (!T.M[i].phantomCut) T.gar[i] = 1; }
       var tgt = T.tgt, sum = 0, outW = 0;
       for (i = 0; i < n; i++) { tgt[i] = act[i] ? (T.isSt[i] ? T.muS[i] : T.muB[i]) : 0; if (tgt[i] >= 30 && !T.M[i].pinned) tgt[i] += P.topMinAdd; }
+      var wg_ = P.wowyG < 1, wb1 = T.wb1, wbn = T.wbn; if (wg_) { wb1.fill(0); wbn.fill(0); }
       for (j = 0; j < n; j++) {
         if (act[j] || T.muAll[j] < 12 || T.pPlay[j] >= 0.999) continue;
         outW += T.muAll[j];
@@ -4210,9 +4256,12 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
           var dl_ = T.wowy[j * n + i] * T.rec[j];
           // a spot starter's starter mean already carries the role bump: only add what exceeds it
           if (P.wowyFix && dl_ > 0 && T.isSt[i] && T.pStH[i] < 0.5) { dl_ -= Math.max(0, T.muS[i] - T.muB[i]); if (dl_ < 0) dl_ = 0; }
-          tgt[i] += dl_;
+          // wowyG < 1: with several regulars out, a player's with/without bumps do not stack in full. The largest counts whole, the rest are scaled by wowyG.
+          if (wg_ && dl_ > 0) { if (dl_ > wb1[i]) { wbn[i] += wb1[i]; wb1[i] = dl_; } else wbn[i] += dl_; }
+          else tgt[i] += dl_;
         }
       }
+      if (wg_) for (i = 0; i < n; i++) if (act[i]) tgt[i] += wb1[i] + P.wowyG * wbn[i];
       for (i = 0; i < n; i++) { if (act[i]) { if (tgt[i] < 0.5) tgt[i] = 0.5; sum += tgt[i]; } }
       if (sum < 240) {
         var d = 240 - sum, sw = 0;
@@ -4369,6 +4418,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       G.subs += subs;
       if (record) {
         G.aPts[si] = A.pts; G.hPts[si] = H.pts; G.poss[si] = pace; if (ot) G.nOT++; if (mg >= 20) G.nBlow++;
+        for (var qi_ = 0; qi_ < 4; qi_++) { if (mg36 >= 10 + 5 * qi_) G.mq[qi_]++; if (mg >= 10 + 5 * qi_) G.mq[4 + qi_]++; } if (garbSeen) G.mq[8]++; G.mq[9] += nGarbSeg;
         if (diagOn) { var gb_ = Math.min(3, (mg / 10) | 0); G.dg[gb_] += nGarbSeg; G.dg[4 + gb_] += 1; G.dg[8 + gb_] += mg36; }
         A.diagMg = H.diagMg = mg; A.diagWon = A.pts > H.pts ? 1 : 0; H.diagWon = 1 - A.diagWon;
         rec(A, si); rec(H, si);
@@ -4451,7 +4501,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       G.subsPilot = G.subs / (2 * pilN * 2);
       rnd = mulberry32((seed * 7919 + gi * 104729 + 12345) | 0); spare = null;
       // main sims
-      G.dg = new Float64Array(12); G.aPts = new Float32Array(nSims); G.hPts = new Float32Array(nSims); G.poss = new Float32Array(nSims); G.nOT = 0; G.nBlow = 0;
+      G.dg = new Float64Array(12); G.aPts = new Float32Array(nSims); G.hPts = new Float32Array(nSims); G.poss = new Float32Array(nSims); G.nOT = 0; G.nBlow = 0; G.mq = new Float64Array(10);
       [A, H].forEach(function (T) { T.R = T.M.map(function () { return { fp: new Float32Array(nSims), mn: new Float32Array(nSims), sc: new Float32Array(nSims), pt: new Float32Array(nSims), sum: new Float64Array(NS), nPlay: 0, dd: 0, td: 0 }; }); T.lineups = new Map(); T.startCnt.fill(0); T.diag = new Float64Array(12); T.diag2 = new Float64Array(16); });
       // ----- market blend: move if-plays median points toward a liquid Kalshi points line (minutes mostly, usage some) -----
       var mkBlend = opts.marketBlend != null ? +opts.marketBlend : P.marketBlend;
@@ -4472,7 +4522,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
               T.muS[i] *= fm; T.muB[i] = Math.min(38, T.muB[i] * fm); T.muAll[i] = Math.min(cap, T.muAll[i] * fm); T.plays[i] *= fu; x.f *= fq; x.fm = (x.fm || 1) * fm; x.fu = (x.fu || 1) * fu;
             });
             [A, H].forEach(function (T) { T.R.forEach(function (R) { R.nPlay = 0; R.dd = 0; R.td = 0; R.sum.fill(0); }); T.lineups = new Map(); T.startCnt.fill(0); T.diag.fill(0); T.diag2.fill(0); });
-            G.nOT = 0; G.nBlow = 0;
+            G.nOT = 0; G.nBlow = 0; G.mq.fill(0);
           }
           mkList.forEach(function (x) { if (x.med0 == null) return; x.m.mkt = { ptsLine: x.line, simMedianBefore: r2(x.med0), target: r2(x.target), minMult: r3(x.fm || 1), usgMult: r3(x.fu || 1) }; x.m.notes.push('market blend ' + mkBlend + ': Kalshi points line ' + x.line + ' vs sim if-plays median ' + r2(x.med0) + ', minutes x' + r3(x.fm || 1) + ', usage x' + r3(x.fu || 1)); });
           rnd = mulberry32((seed * 7919 + gi * 104729 + 12345) | 0); spare = null;
@@ -4509,6 +4559,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
         awayPts: { mean: r2(sA.mean), p10: r2(pct(sA.so, nDone, 0.1)), p90: r2(pct(sA.so, nDone, 0.9)) },
         homePts: { mean: r2(sH.mean), p10: r2(pct(sH.so, nDone, 0.1)), p90: r2(pct(sH.so, nDone, 0.9)) },
         winProbHome: r3(hw / nDone), pOT: r3(G.nOT / nDone), pBlowout: r3(G.nBlow / nDone), margin: { mean: r2(sM.mean), sd: r2(sM.sd) },
+        mgDist: { q3: [0, 1, 2, 3].map(function (k) { return r3(G.mq[k] / nDone); }), fin: [4, 5, 6, 7].map(function (k) { return r3(G.mq[k] / nDone); }), garb: r3(G.mq[8] / nDone), garbMin: r2(G.mq[9] / nDone) },   // share of sims with a lead of 10/15/20/25+ after three quarters and at the end; share with any garbage time; garbage minutes per game
         subWindowsPerTeam: r2(G.subsPilot), ratingTotal: r2(G.ratingTotal), paceBase: r2(G.paceBase), targetTotal: r2(G.tA + G.tH), held: !!G.held,
         dg: diagOn ? Array.prototype.slice.call(G.dg) : undefined,
         diag: diagOn ? { a: Array.prototype.slice.call(A.diag), h: Array.prototype.slice.call(H.diag), a2: Array.prototype.slice.call(A.diag2), h2: Array.prototype.slice.call(H.diag2) } : undefined
@@ -4550,6 +4601,16 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
             var fpMarks = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], xMarks = [2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8], H = { fp: {}, x: {}, fpIfPlays: {}, xIfPlays: {} };
             fpMarks.forEach(function (t) { H.fp[t] = r3(geq(f.so, nDone, t) / nDone); H.fpIfPlays[t] = np ? r3(geq(ipa, np, t) / np) : 0; });
             xMarks.forEach(function (k) { var t = k * sal / 1000; H.x[k] = sal > 0 ? r3(geq(f.so, nDone, t) / nDone) : 0; H.xIfPlays[k] = sal > 0 && np ? r3(geq(ipa, np, t) / np) : 0; });
+            // Value odds are corrected for overconfidence. Checked against 36,270 player-games with real DraftKings salaries (Warehouse slates,
+            // injury-report replay): the raw share of sims was right through 4x and ran high above it (6x: 22.8% said, 21.5% hit; 8x: 7.3% said, 5.4% hit),
+            // and worst for the players the sim liked most (said 60% at 6x, hit 47%). Each mark gets its own line fit to those results.
+            // Only for players 90%+ to play with 8+ projected minutes, the group it was fit on. hit.xRaw keeps the uncorrected share.
+            if (P.xCal && sal > 0 && m.pPlay >= 0.9 && mm.mean >= 8) {
+              H.xRaw = {}; var prev = 1, prevI = 1;
+              xMarks.forEach(function (k) { var c = XCAL[k]; H.xRaw[k] = H.x[k]; if (!c) return;
+                var v = Math.max(0, Math.min(1, c[1] + c[0] * H.x[k])), vi = Math.max(0, Math.min(1, c[1] + c[0] * H.xIfPlays[k]));
+                v = Math.min(v, prev); vi = Math.min(vi, prevI); prev = v; prevI = vi; H.x[k] = r3(v); H.xIfPlays[k] = r3(vi); });
+            }
             o.hit = H;
           })();
           if (m.mkt) { var mc = 0, mt_ = new Float64Array(np || 1); for (q = 0; q < nDone; q++) if (R.mn[q] > 0) mt_[mc++] = R.pt[q]; mt_.sort(); m.mkt.simMedianAfter = r2(pct(mt_, mc, 0.5)); o.marketBlend = m.mkt; }
@@ -5764,7 +5825,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     { k: 'val', l: 'Value', t: glossTip('Value'), d: 2 },
     { k: 'opt', l: 'Optimal %', t: glossTip('Optimal %') + ' Counted across all sims, including the ones where he sits.', p: 1, d: 1 },
     { k: 'own', l: 'Own %', lh: function () { return 'Own %' + (HASEXT ? '<span class="mk">file</span>' : '<span class="mk est">est</span>'); }, t: function () { return HASEXT ? 'Field ownership from ' + (EXT.fileName || 'the uploaded file') + '. Players missing from the file use the model estimate, marked est.' : glossTip('Own %') + (get(S, 'own.calibrated') ? '' : ' Unvalidated estimate: not fitted to real contest ownership.'); }, need: 'own',
-      h: function (r) { return pct(r.own, 1) + (HASEXT && r.own != null && /news/.test(r.ownSrc || '') ? '<span class="mk" title="' + (r.ownSrc === 'file-news' ? 'OUT since the file: his file ownership went to teammates and the field' : 'File had him out; now active, so the model estimate is used') + '">news</span>' : HASEXT && r.own != null && r.ownSrc !== 'file' ? '<span class="mk est" title="Not in the file: model estimate">est</span>' : ''); } },
+      h: function (r) { return pct(r.own, 1) + (r.ownSrc === 'proj' && r.own ? '<span class="mk" title="Estimated from the uploaded projections: the file has no ownership. About 2 points average error in testing; chalk runs low.">proj</span>' : '') + (HASEXT && r.own != null && /news/.test(r.ownSrc || '') ? '<span class="mk" title="' + (r.ownSrc === 'file-news' ? 'OUT since the file: his file ownership went to teammates and the field' : 'File had him out; now active, so the model estimate is used') + '">news</span>' : HASEXT && r.own != null && r.ownSrc !== 'file' ? '<span class="mk est" title="Not in the file: model estimate">est</span>' : ''); } },
     { k: 'lev', l: 'Leverage', t: function () { return glossTip('Leverage') + (HASEXT ? ' Uses file ownership. Colored at 5 points or more either way.' : get(S, 'own.calibrated') ? ' Colored at 5 points or more either way.' : ' Built on unvalidated ownership, so it is not colored.'); }, need: 'own', h: function (r) { return r.lev == null ? NA : (get(S, 'own.calibrated') || r.ownSrc === 'file') && Math.abs(+r.lev.toFixed(1)) >= 5 ? '<span class="' + (r.lev > 0 ? 'pos' : 'neg') + '">' + signed(r.lev) + '</span>' : signed(r.lev); } },
     { k: 'extProj', l: 'Ext Proj', t: 'Points projection from the uploaded file. Shown for comparison, never used as the projection. 0 = file has him not playing.', need: 'ext' },
     { k: 'simExt', l: 'Sim minus Ext', t: 'Sim Proj minus the file projection. Colored at 5 points or more either way. Blank when the file has 0.', need: 'ext', h: function (r) { return r.simExt == null ? NA : Math.abs(r.simExt) >= 5 ? '<span class="' + (r.simExt > 0 ? 'pos' : 'neg') + '">' + signed(r.simExt) + '</span>' : signed(r.simExt); } },
@@ -5809,7 +5870,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   function colBy(k) { for (var i = 0; i < COLS.length; i++) if (COLS[i].k === k) return COLS[i]; return null; }
   function viewCols() {
     if (U.pview === 'fp') return [colBy('name'), colBy('salary'), colBy('itt'), colBy('minS'), colBy('proj'), colBy('val'), colBy('opt')].concat(FPM.map(function (m) { return { k: 'f' + m, l: m + '+', t: 'Share of sims with ' + m + ' DK points or more', heat: 1 }; }));
-    if (U.pview === 'x') return [colBy('name'), colBy('salary'), colBy('itt'), colBy('minS'), colBy('proj'), colBy('val'), colBy('opt')].concat(XM.map(function (m) { return { k: 'x' + m, l: m + 'x', t: 'Share of sims at ' + m + 'x salary or better (' + m + ' DK points per $1,000)', heat: 1, cs: 'fix01' }; }));
+    if (U.pview === 'x') return [colBy('name'), colBy('salary'), colBy('itt'), colBy('minS'), colBy('proj'), colBy('val'), colBy('opt')].concat(XM.map(function (m) { return { k: 'x' + m, l: m + 'x', t: 'Chance of ' + m + 'x salary or better (' + m + ' DK points per $1,000). Share of sims, corrected for how often those odds hit on 310 past slates (above 4x the raw share ran high).', heat: 1, cs: 'fix01' }; }));
     return COLS.filter(colOn);
   }
   /* ---------- filtering and sorting ---------- */
@@ -5859,7 +5920,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 
   /* ---------- top bar ---------- */
   function themeName() { return U.theme === 'dark' ? 'dark' : U.theme === 'light' ? 'light' : 'auto'; }
-  var TABS = [['players', 'Players'], ['inj', 'Injuries'], ['optimal', 'Lineups'], ['games', 'Games'], ['teams', 'Teams'], ['news', 'News'], ['swap', 'Late swap']];
+  var TABS = [['players', 'Players'], ['cash', 'Cash'], ['inj', 'Injuries'], ['optimal', 'Lineups'], ['games', 'Games'], ['teams', 'Teams'], ['news', 'News'], ['swap', 'Late swap']];
   var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var SIMOPTS = [10000, 20000, 30000];
   function simSel() { var n = num(get(S, 'settings.nSims')); return SIMOPTS.indexOf(n) >= 0 ? n : 10000; }
@@ -6544,8 +6605,42 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   }
 
   /* ---------- main render ---------- */
+  /* ---------- cash tab: high-floor plays ---------- */
+  function cashRows() {
+    var C = U.ct || {}, sw = num(C.simWeight), wSim = (sw == null ? autoSW() : Math.max(0, Math.min(100, sw))) / 100;
+    return ROWS.filter(function (r) { return !r.out && r.salary > 0 && r.fpMean != null && (r.pPlay == null || r.pPlay >= 0.5) && r.fpMean >= 6; }).map(function (r) {
+      var hx = get(r.p, 'hit.x') || {}, ext = HASEXT && r.extProj != null && r.extProj > 0 ? r.extProj : null;
+      var shift = ext == null ? 0 : (1 - wSim) * (ext - r.fpMean);   // lean the sim's range toward the uploaded projection by the same weight the builder uses
+      var fl = r.p25 == null ? null : Math.max(0, r.p25 + shift), md = r.p50 == null ? null : Math.max(0, r.p50 + shift);
+      return { r: r, fl: fl, md: md, flv: fl == null ? null : fl / r.salary * 1000, mdv: md == null ? null : md / r.salary * 1000, x3: num(hx[3]), x4: num(hx[4]), x5: num(hx[5]),
+        mn10: num(get(r.p, 'min.p10')), ext: ext, fileOut: HASEXT && r.extProj === 0 };
+    }).sort(function (a, b) { return (b.flv || 0) - (a.flv || 0); });
+  }
+  function viewCash() {
+    var rows = cashRows(), lnk = function (r) { return '<span class="lnk" data-act="card" data-v="' + esc(r.id) + '" role="button" tabindex="0">' + esc(r.name) + '</span>' + (STAT[r.status] ? ' <span class="tag ' + r.status + '">' + STAT[r.status] + '</span>' : ''); };
+    var head = '<p class="count">High-floor plays for cash games, sorted by <b>Floor value</b>: the 25th percentile outcome per $1,000 of salary, counting the nights he sits or gets hurt. ' +
+      (HASEXT ? 'Floor and Median are pulled toward your uploaded projections by the same weight the lineup builder uses. ' : 'Upload a projections file and Floor and Median lean toward it; that combination tested best. ') +
+      'Backtest, 310 main slates from the Warehouse: the top 20 by floor value reached 4x salary 75% of the time and fell under 3x 10% of the time (78% and 8% with uploaded projections blended in), against 71% and 14% for the top 20 by projection per dollar. ' +
+      'Ceiling does not count here.</p>';
+    if (!rows.length) return head + '<p class="muted">No projections yet.</p>';
+    var pos = ['PG', 'SG', 'SF', 'PF', 'C'], core = pos.map(function (ps) {
+      var top = rows.filter(function (x) { return x.r.elig.indexOf(ps) >= 0 && (x.r.pPlay == null || x.r.pPlay >= 0.9); }).slice(0, 4);
+      return '<tr><td>' + ps + '</td>' + [0, 1, 2, 3].map(function (i) { var x = top[i]; return '<td class="wrap">' + (x ? lnk(x.r) + ' <span class="muted">' + money(x.r.salary) + ', ' + f(x.flv, 2) + '</span>' : NA) + '</td>'; }).join('') + '</tr>';
+    }).join('');
+    var th = function (l, t, cs) { return '<th class="n"' + (cs ? ' data-cs="' + cs + '"' : '') + (t ? ' title="' + esc(t) + '"' : '') + '>' + l + '</th>'; };
+    return head +
+      '<h4 class="lbl" style="margin:10px 0 6px">Best floor value by position (90%+ to play)</h4><div class="tw"><table class="mini" data-sid="cash-core"><thead><tr><th>Pos</th><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>' + core + '</tbody></table></div>' +
+      '<h4 class="lbl" style="margin:14px 0 6px">All plays</h4><div class="tw"><table data-sid="cash"><thead><tr><th>Player</th><th>Pos</th><th>Team</th><th>Opp</th>' +
+      th('Sal') + th('ITT', 'Implied team total') + th('Play', 'Chance he plays', 'fix01') + th('Start', 'Chance he starts', 'fix01') + th('Min', 'Projected minutes, all sims') + th('Min floor', '10th percentile minutes, all sims. 0 means he sits in at least 1 sim in 10.') +
+      th('Floor', '25th percentile DK points, all sims' + (HASEXT ? ', leaned toward the uploaded projection' : '')) + th('Median', 'Median DK points, all sims' + (HASEXT ? ', leaned toward the uploaded projection' : '')) +
+      th('Floor value', 'Floor per $1,000. Sort key.') + th('Med value', 'Median per $1,000') + th('3x', 'Chance of 3x salary or better, all sims, corrected against past results', 'fix01') + th('4x', 'Chance of 4x salary or better, all sims, corrected against past results', 'fix01') + th('5x', 'Chance of 5x salary or better, all sims, corrected against past results', 'fix01') +
+      (HASEXT ? th('File proj', 'Uploaded projection') : '') + (HASOWN ? th('Own', 'Projected ownership') : '') + '</tr></thead><tbody>' +
+      rows.map(function (x) { var r = x.r; return '<tr><td>' + lnk(r) + (x.fileOut ? ' <span class="mk" title="The uploaded file projects him for 0">file 0</span>' : '') + '</td><td>' + esc(r.pos) + '</td><td>' + esc(r.team) + '</td><td>' + esc(r.opp) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(r.itt) + '</td><td class="n">' + pct(r.pPlay) + '</td><td class="n">' + pct(r.pStart) + '</td><td class="n">' + f(r.min) + '</td><td class="n">' + f(x.mn10) + '</td><td class="n">' + f(x.fl) + '</td><td class="n">' + f(x.md) + '</td><td class="n"><b>' + f(x.flv, 2) + '</b></td><td class="n">' + f(x.mdv, 2) + '</td><td class="n">' + pct(x.x3) + '</td><td class="n">' + pct(x.x4) + '</td><td class="n">' + pct(x.x5) + '</td>' +
+        (HASEXT ? '<td class="n">' + f(x.ext) + '</td>' : '') + (HASOWN ? '<td class="n">' + pct(r.own, 1) + '</td>' : '') + '</tr>'; }).join('') + '</tbody></table></div>';
+  }
+
   function viewTab() {
-    var v = { players: viewPlayers, inj: viewInj, games: viewGames, teams: viewTeams, news: viewNews, optimal: viewOptimal, swap: viewSwap }[U.tab] || viewPlayers;
+    var v = { players: viewPlayers, cash: viewCash, inj: viewInj, games: viewGames, teams: viewTeams, news: viewNews, optimal: viewOptimal, swap: viewSwap }[U.tab] || viewPlayers;
     return safe(v, U.tab + ' tab');
   }
   /* ---------- late swap tab ---------- */
@@ -6809,7 +6904,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   if (typeof module !== 'undefined' && module.exports) module.exports = NBAUI;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>globalThis.__NBA_BUILD__="2026-11-17 14:36 UTC";</script>
+<script>globalThis.__NBA_BUILD__="2026-11-17 19:51 UTC";</script>
 <script>/* NBA DK Sim Lab: controller. Glues NBAData, NBANews, NBAEngine, NBAUI. */
 (function () {
   'use strict';
