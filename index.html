@@ -465,6 +465,9 @@ table[data-sid="inj-top"] td:last-child,table[data-sid="inj-top"] th:last-child{
 table[data-sid="cash-core"] td,table[data-sid="cash-core"] th{text-align:left}
 table[data-sid="cash"] td:first-child,table[data-sid="cash"] th:first-child{text-align:left}
 
+/* position and team after a player name */
+.pt{font-size:.8em;color:var(--muted);white-space:nowrap;font-weight:400;letter-spacing:0}
+
 </style>
 </head>
 <body>
@@ -3678,7 +3681,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     out.forEach(function (o) { if (o.own != null) o.own = Math.max(0, Math.min(1, o.own * scale)); });
     var ownSum = sum * scale;
     if (c.own >= 0 && ownSum >= 8.6 && ownSum <= 9.4) warnings.push('Ownership sums to ' + (ownSum * 100).toFixed(0) + '%, which looks like a FanDuel file (9 roster spots sum to 900%). DraftKings classic sums to 800%. Check that this is the DraftKings export.');
-    else if (c.own >= 0 && ownSum < 1) warnings.push('The ownership column is empty or all zero (sums to ' + (ownSum * 100).toFixed(0) + '%). Its projections are used, and field ownership is estimated from those projections (about 2 points average error in testing, chalk understated) until a file with ownership is loaded.');
+    else if (c.own >= 0 && ownSum < 1) warnings.push('The ownership column is empty or all zero (sums to ' + (ownSum * 100).toFixed(0) + '%). Its projections are used, and field ownership is estimated from those projections (about 1.8 points average error in testing, chalk understated) until a file with ownership is loaded.');
     else if (c.own >= 0 && (ownSum < 6 || ownSum > 10)) warnings.push('Ownership sums to ' + (ownSum * 100).toFixed(0) + '% (a full classic slate sums to 800%).');
     var cols = {}; Object.keys(c).forEach(function (k) { if (c[k] >= 0) cols[k] = rows[0][c[k]]; });
     return { cols: cols, rows: out, ownSum: ownSum, warnings: warnings };
@@ -3730,27 +3733,33 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 
   // Field ownership for the slate: the file where present, the model estimate for the rest, scaled so the total stays 8.0.
   /* Ownership from a projections file that carries no ownership. The field builds off consensus projections, so value and
-     projection rank explain most of real ownership. Fitted on real main-slate GPP ownership in the Warehouse (310 slates,
-     2024-25 to 2026-27): on held-out slates MAE 2.0 points and correlation 0.85, against 3.4 and 0.58 for the no-file model
-     and 1.4 and 0.93 for a professional ownership projection. Chalk is still understated: real 20%+ plays average 29% here.
-     players: [{ id, sal, pos, proj }] with proj 0 for anyone out. Returns { id: share 0..1 }, summing to 8. */
-  var OWN_B = [5.6028, 0.4605, 0.7552, 0.5985, -1.1533, -0.3728, -0.0649, -0.8917, 1.0367, 0.8106];
-  function ownFromProj(players) {
-    var act = players.filter(function (p) { return p.proj > 0 && p.sal > 0; }), out = {}, n = players.length;
+     projection rank explain most of real ownership. Fitted on real main-slate GPP ownership in the Warehouse, 2025-26 and 2026-27
+     only (203 slates; the projections changed method before that), with extra weight on highly owned players.
+     Held-out slates: mean error 1.75 points, correlation 0.88, 82% of real 20%+ plays shown at 15%+, against 1.29, 0.94 and 95%
+     for a professional ownership projection and 3.4, 0.58, 44% for the no-file model. Chalk still runs low: real 20%+ plays
+     average 34% and show here as 28%.
+     players: [{ id, sal, pos, proj, min }] with proj 0 for anyone out; nGames = games on the slate. Returns { id: share 0..1 }, summing to 8. */
+  var OWN_B = [0.0000, 2.0166, 0.2340, -0.9034, -0.7284, -0.3856, -0.3102, 0.2078, 0.1174, -0.0309, -0.0493, -0.1414, 0.4084, 0.2023, 0.7123, -0.1021];
+  function ownFromProj(players, nGames) {
+    var act = players.filter(function (p) { return p.proj > 0 && p.sal > 0; }), out = {};
     players.forEach(function (p) { out[p.id] = 0; });
     if (act.length < 8) return out;
     var ms = function (f) { var m = 0, v = 0; act.forEach(function (p) { m += f(p); }); m /= act.length; act.forEach(function (p) { v += (f(p) - m) * (f(p) - m); }); return [m, Math.sqrt(v / act.length) || 1]; };
-    var val = function (p) { return p.proj / p.sal * 1000; }, pj = function (p) { return p.proj; }, mv = ms(val), mp = ms(pj), z = function (x, m) { return Math.max(-3, Math.min(3.5, (x - m[0]) / m[1])); };
-    var rk = {}, byPos = {}; act.forEach(function (p) { var k = String(p.pos || '').split('/')[0]; (byPos[k] = byPos[k] || []).push(p); });
+    var val = function (p) { return p.proj / p.sal * 1000; }, pj = function (p) { return p.proj; }, mnf = function (p) { return +p.min > 0 ? +p.min : 0; };
+    var mv = ms(val), mp = ms(pj), mm = ms(mnf), z = function (x, m) { return Math.max(-3, Math.min(3.5, (x - m[0]) / m[1])); };
+    var rk = {}, rkAll = {}, byPos = {}; act.forEach(function (p) { var k = String(p.pos || '').split('/')[0]; (byPos[k] = byPos[k] || []).push(p); });
     Object.keys(byPos).forEach(function (k) { byPos[k].sort(function (a, b) { return val(b) - val(a); }).forEach(function (p, i) { rk[p.id] = i + 1; }); });
-    var tot = 0, B = OWN_B, ln = Math.log(Math.max(2, n));
+    act.slice().sort(function (a, b) { return val(b) - val(a); }).forEach(function (p, i) { rkAll[p.id] = i + 1; });
+    var B = OWN_B, lg = Math.log(Math.max(1, +nGames || 6) / 6), mx = -Infinity, lin = {};
     act.forEach(function (p) {
-      var vz = z(val(p), mv), pz = z(pj(p), mp), r = rk[p.id];
-      var lin = B[0] + B[1] * vz + B[2] * pz + B[3] * Math.max(vz - 1, 0) + B[4] * Math.max(vz - 2, 0) + (p.sal >= 8000 ? B[5] : 0) + (p.sal < 4000 ? B[6] : 0) + B[7] * ln + (r === 1 ? B[8] : 0) + (r === 2 || r === 3 ? B[9] : 0);
-      out[p.id] = Math.max(0, Math.exp(lin) - 0.3); tot += out[p.id];
+      var vz = z(val(p), mv), pz = z(pj(p), mp), r = rk[p.id], ra = rkAll[p.id];
+      var l = B[1] * vz + B[2] * pz + B[3] * Math.max(vz - 1, 0) + B[4] * Math.max(vz - 2, 0) + (p.sal >= 8000 ? B[5] : 0) + (p.sal < 4000 ? B[6] : 0) + (r === 1 ? B[7] : 0) + (r === 2 || r === 3 ? B[8] : 0) +
+        (ra <= 3 ? B[9] : 0) + (ra > 3 && ra <= 8 ? B[10] : 0) + B[11] * vz * pz + B[12] * Math.max(pz - 1, 0) + B[13] * z(mnf(p), mm) + B[14] * vz * lg + (p.sal <= 3500 ? B[15] * Math.max(vz, 0) : 0);
+      lin[p.id] = l; if (l > mx) mx = l;
     });
-    for (var it = 0; it < 4 && tot > 0; it++) { var t2 = 0; act.forEach(function (p) { out[p.id] = Math.min(0.70, out[p.id] * (it === 0 ? 8 / tot : 1)); t2 += out[p.id]; }); if (t2 > 0) act.forEach(function (p) { out[p.id] *= 8 / t2; }); tot = 8; }
-    act.forEach(function (p) { out[p.id] = Math.min(0.75, out[p.id]); });
+    var tot = 0; act.forEach(function (p) { out[p.id] = Math.exp(Math.max(-40, lin[p.id] - mx)); tot += out[p.id]; });
+    act.forEach(function (p) { out[p.id] *= 8 / tot; });
+    for (var it = 0; it < 3; it++) { var t2 = 0; act.forEach(function (p) { out[p.id] = Math.min(0.72, out[p.id]); t2 += out[p.id]; }); act.forEach(function (p) { out[p.id] *= 8 / t2; }); }
     return out;
   }
   function fieldOwnership(slate, extMatch, ownModel, ctx) {
@@ -3759,8 +3768,8 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     if (extMatch) { var tot = 0, nOwn = 0; Object.keys(extMatch.byDk || {}).forEach(function (id) { var e0 = extMatch.byDk[id]; if (e0 && e0.own != null) { tot += +e0.own || 0; nOwn++; } }); if (!nOwn || tot < 1) {
         // projections but no ownership: estimate ownership from the file's projections (fitted), not from the no-file model
         var np0 = (ctx && ctx.news && ctx.news.players) || {}, pl = [], nProj = 0;
-        (slate.players || []).forEach(function (p) { var e1 = extMatch.byDk[p.dkId], pr = e1 && e1.proj != null && isFinite(+e1.proj) ? +e1.proj : 0, nw = np0[p.dkId]; if (nw && nw.pPlay != null && +nw.pPlay <= 0.05) pr = 0; if (pr > 0) nProj++; pl.push({ id: p.dkId, sal: +p.salary || 0, pos: p.pos || '', proj: pr }); });
-        if (nProj >= 20) { var op = ownFromProj(pl), o2 = {}; Object.keys(op).forEach(function (id) { o2[id] = { own: op[id], src: 'proj' }; }); return o2; }
+        (slate.players || []).forEach(function (p) { var e1 = extMatch.byDk[p.dkId], pr = e1 && e1.proj != null && isFinite(+e1.proj) ? +e1.proj : 0, nw = np0[p.dkId]; if (nw && nw.pPlay != null && +nw.pPlay <= 0.05) pr = 0; if (pr > 0) nProj++; pl.push({ id: p.dkId, sal: +p.salary || 0, pos: p.pos || '', proj: pr, min: e1 && +e1.minutes > 0 ? +e1.minutes : 0 }); });
+        if (nProj >= 20) { var op = ownFromProj(pl, (slate.games || []).length), o2 = {}; Object.keys(op).forEach(function (id) { o2[id] = { own: op[id], src: 'proj' }; }); return o2; }
         extMatch = null;
       } }
     (slate.players || []).forEach(function (p) {
@@ -3810,14 +3819,14 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 <script id="engine-src">/* NBA DK Sim Lab engine. Possession-level rotation simulation. No deps, no DOM. */
 (function (root) {
   'use strict';
-  var VERSION = '1.5.0';
+  var VERSION = '1.6.0';
   var PARAMS = /*PARAMS*/{
     hlRate: 40, prevWRate: 0.7, shrinkPoss: 60, k2: 60, k3: 120, kft: 40,
     hlMin: 3, prevWMin: 0.5, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
     benchSdA: 12.5, benchSdK: -1.26, benchSdLo: 6, minSdLo: 3.5, minSdHi: 8.5, stUp: 0.7, stDn: 1.3,
     usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.28, vsPow: 1.0, vsMin: 0.55,
     paceSd: 4.0, effSd: 0.06, effRho: 0.15, homeEdge: 1.3, ratingBlend: 0.5, paceShareMkt: 0, paceShareNoMkt: 0,
-    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
+    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
     hlRot: 3, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, hlRateYoung: 40, youngG: 100,
     noNewsMiss: [1, 0.5, 0.3, 0.15, 0.1, 0.06],
     curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: -0.5,
@@ -4138,6 +4147,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       }
       // Minutes from an uploaded projections file. On 310 Warehouse slates the file's minutes missed by 4.58 against 4.94 for the sim, and by
       // 5.72 against 8.27 where the two disagreed by 6+. The sim's minute targets move extMinW of the way to the file (0.75 tested best).
+      if (nw && +nw.extProj > 0) { m.extProj = +nw.extProj; m.extProjW = nw.extProjW != null && isFinite(+nw.extProjW) ? Math.max(0, Math.min(1, +nw.extProjW)) : P.extProjW; }
       if (nw && nw.extMin != null && isFinite(+nw.extMin) && +nw.extMin > 0) {
         var xw_ = nw.extMinW != null && isFinite(+nw.extMinW) ? Math.max(0, Math.min(1, +nw.extMinW)) : P.extMinW, xm_ = Math.min(44, +nw.extMin);
         if (xw_ > 0) { m.simMin0 = m.muAll; m.extMin = xm_; m.muS += xw_ * (xm_ - m.muS); m.muB += xw_ * (xm_ - m.muB); m.muAll += xw_ * (xm_ - m.muAll);
@@ -4576,19 +4586,31 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
         var T = pr2[0], rot = [];
         for (var i = 0; i < T.n; i++) {
           var m = T.M[i]; if (m.phantom) continue;
-          var R = T.R[i], sp = m.sp, f = summarize(R.fp, nDone), mm = summarize(R.mn, nDone), o = zeroPlayer(sp, m.pPlay, m.notes);
+          var R = T.R[i], sp = m.sp, FPA = R.fp, rawMean = null;
+          // Anchor to the uploaded projection. On 174 Warehouse slates since October 2025 the file's projection missed by 7.43 per player and the sim
+          // (with file minutes) by 7.72; scaling the sim's outcomes so the mean sits extProjW of the way to the file cut range loss from 2.66 to 2.60.
+          // Every sim outcome of the player is multiplied by one factor, so shape, floor/ceiling ratios and zero-minute nights are the sim's.
+          // Only the reported numbers move: the per-sim arrays kept for the contest sim stay raw (it does its own blend).
+          if (m.extProj > 0 && m.extProjW > 0 && nDone > 0) {
+            var rs_ = 0; for (var qa = 0; qa < nDone; qa++) rs_ += R.fp[qa]; rs_ /= nDone;
+            var xt_ = m.extProj * (m.pPlay < 0.9 ? m.pPlay : 1);   // file number read as if-plays for a player in doubt (same as the lineup builder); untested, the backtest has actives known
+            if (rs_ > 1) { var af_ = Math.max(0.6, Math.min(1.6, (m.extProjW * xt_ + (1 - m.extProjW) * rs_) / rs_));
+              if (Math.abs(af_ - 1) > 1e-6) { FPA = new Float32Array(nDone); for (qa = 0; qa < nDone; qa++) FPA[qa] = R.fp[qa] * af_; rawMean = rs_; } }
+          }
+          var f = summarize(FPA, nDone), mm = summarize(R.mn, nDone), o = zeroPlayer(sp, m.pPlay, m.notes);
+          if (rawMean != null) { o.fpRawMean = r2(rawMean); o.extProj = m.extProj; o.extProjW = m.extProjW; }
           var sal = num(sp.salary);
           o.pStart = r3(T.startCnt[i] / nDone);
           o.min = { mean: r2(mm.mean), sd: r2(mm.sd), p10: r2(pct(mm.so, nDone, 0.1)), p50: r2(pct(mm.so, nDone, 0.5)), p90: r2(pct(mm.so, nDone, 0.9)) };
           var step = 2.5, mx = f.so.length ? f.so[nDone - 1] : 0, nb = Math.max(1, Math.min(60, Math.floor(mx / step) + 1)), counts = new Array(nb).fill(0), boom = 0, bust = 0, bl = 5 * sal / 1000 + 10, bu = 4 * sal / 1000;
           var sp1 = 0, v;
-          for (var q = 0; q < nDone; q++) { v = R.fp[q]; counts[Math.min(nb - 1, Math.max(0, Math.floor(v / step)))]++; if (v >= bl) boom++; if (v < bu) bust++; if (R.mn[q] > 0) sp1 += v; }
+          for (var q = 0; q < nDone; q++) { v = FPA[q]; counts[Math.min(nb - 1, Math.max(0, Math.floor(v / step)))]++; if (v >= bl) boom++; if (v < bu) bust++; if (R.mn[q] > 0) sp1 += v; }
           o.fp = { mean: r2(f.mean), sd: r2(f.sd), p10: r2(pct(f.so, nDone, 0.1)), p25: r2(pct(f.so, nDone, 0.25)), p50: r2(pct(f.so, nDone, 0.5)), p75: r2(pct(f.so, nDone, 0.75)), p90: r2(pct(f.so, nDone, 0.9)), p95: r2(pct(f.so, nDone, 0.95)), p99: r2(pct(f.so, nDone, 0.99)), hist: { lo: 0, step: step, counts: counts } };
           var np = R.nPlay, z0 = nDone - np;
           var ip = null, ipa = null;
           if (np) {
             var ipn = 0; ipa = new Float64Array(np); var _u, ips = 0, ips2 = 0;
-            for (q = 0; q < nDone; q++) if (R.mn[q] > 0) { v = R.fp[q]; ipa[ipn++] = v; ips += v; ips2 += v * v; }
+            for (q = 0; q < nDone; q++) if (R.mn[q] > 0) { v = FPA[q]; ipa[ipn++] = v; ips += v; ips2 += v * v; }
             ipa.sort(); var ipm = ips / np;
             ip = { mean: r2(ipm), sd: r2(Math.sqrt(Math.max(0, ips2 / np - ipm * ipm))), p10: r2(pct(ipa, np, 0.1)), p25: r2(pct(ipa, np, 0.25)), p50: r2(pct(ipa, np, 0.5)), p75: r2(pct(ipa, np, 0.75)), p90: r2(pct(ipa, np, 0.9)), p99: r2(pct(ipa, np, 0.99)) };
           }
@@ -5757,7 +5779,9 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       var ow = HASOWN ? OWN[id] : null; r.own = ow == null ? null : num(typeof ow === 'object' ? ow.own : ow);
       var xb = HASEXT ? EXT.byDk[id] : null; r.ownSrc = ow && typeof ow === 'object' && ow.src ? String(ow.src) : (xb && num(xb.own) != null ? 'file' : HASEXT ? 'est' : '');
       if (xb && num(xb.own) != null && (ow == null || !(typeof ow === 'object' && ow.src))) { r.own = num(xb.own); r.ownSrc = 'file'; }
-      r.extProj = xb ? num(xb.proj) : null; r.simExt = r.extProj != null && r.extProj > 0 && r.proj != null ? r.proj - r.extProj : null;
+      r.extProj = xb ? num(xb.proj) : null;
+      r.fpRaw = num(p.fpRawMean); r.anch = r.fpRaw != null; r.rawSim = !r.anch ? null : r.cond && r.pPlay > 0 ? r.fpRaw / r.pPlay : r.fpRaw;   // sim before the pull to the file
+      r.simExt = r.extProj != null && r.extProj > 0 && r.proj != null ? (r.anch ? r.rawSim : r.proj) - r.extProj : null;
       r.lev = r.opt != null && r.own != null ? (r.opt - r.own) * 100 : null;
       var ru = ruleOf(id); r.rmin = ru.min; r.rmax = ru.max; r.rlock = ru.lock ? 1 : 0; r.rexcl = ru.exclude ? 1 : 0; r.rlx = ru.lock ? 2 : ru.exclude ? -1 : 0;
       r.game = team ? (r.opp ? team + (s.home === true ? ' v ' : s.home === false ? ' @ ' : ' / ') + r.opp : team) : '';
@@ -5820,7 +5844,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   }
   var FPALL = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80], FPM = FPALL, XM = [2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8];
   var COLS = [
-    { k: 'name', l: 'Player', t: 'S = projected starter. Q 48% = questionable, 48% to play.', txt: 1, fixed: 1, h: function (r) { return '<span class="nm">' + esc(r.name) + '</span>' + (r.starter ? '<span class="tag S" title="' + (r.confirmed ? 'Confirmed starter' : 'Projected starter') + '">S</span>' : '') + playTag(r) + (r.ovr ? '<span class="tag OVR" title="Manual override set">OVR</span>' : ''); } },
+    { k: 'name', l: 'Player', t: 'S = projected starter. Q 48% = questionable, 48% to play.', txt: 1, fixed: 1, h: function (r) { return '<span class="nm">' + esc(r.name) + '</span>' + pt(r) + (r.starter ? '<span class="tag S" title="' + (r.confirmed ? 'Confirmed starter' : 'Projected starter') + '">S</span>' : '') + playTag(r) + (r.ovr ? '<span class="tag OVR" title="Manual override set">OVR</span>' : ''); } },
     { k: 'pos', l: 'Pos', txt: 1, hm: 1 },
     { k: 'game', l: 'Game', t: 'Team and opponent. @ = away, v = home.', txt: 1, hm: 1 },
     { k: 'itt', l: 'ITT', t: 'Implied team total: points the betting total and spread give his team (total / 2 minus spread / 2). Falls back to the sim team mean when no line is loaded.', hm: 1 },
@@ -5835,8 +5859,9 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     { k: 'own', l: 'Own %', lh: function () { return 'Own %' + (HASEXT ? '<span class="mk">file</span>' : '<span class="mk est">est</span>'); }, t: function () { return HASEXT ? 'Field ownership from ' + (EXT.fileName || 'the uploaded file') + '. Players missing from the file use the model estimate, marked est.' : glossTip('Own %') + (get(S, 'own.calibrated') ? '' : ' Unvalidated estimate: not fitted to real contest ownership.'); }, need: 'own',
       h: function (r) { return pct(r.own, 1) + (r.ownSrc === 'proj' && r.own ? '<span class="mk" title="Estimated from the uploaded projections: the file has no ownership. About 2 points average error in testing; chalk runs low.">proj</span>' : '') + (HASEXT && r.own != null && /news/.test(r.ownSrc || '') ? '<span class="mk" title="' + (r.ownSrc === 'file-news' ? 'OUT since the file: his file ownership went to teammates and the field' : 'File had him out; now active, so the model estimate is used') + '">news</span>' : HASEXT && r.own != null && r.ownSrc !== 'file' ? '<span class="mk est" title="Not in the file: model estimate">est</span>' : ''); } },
     { k: 'lev', l: 'Leverage', t: function () { return glossTip('Leverage') + (HASEXT ? ' Uses file ownership. Colored at 5 points or more either way.' : get(S, 'own.calibrated') ? ' Colored at 5 points or more either way.' : ' Built on unvalidated ownership, so it is not colored.'); }, need: 'own', h: function (r) { return r.lev == null ? NA : (get(S, 'own.calibrated') || r.ownSrc === 'file') && Math.abs(+r.lev.toFixed(1)) >= 5 ? '<span class="' + (r.lev > 0 ? 'pos' : 'neg') + '">' + signed(r.lev) + '</span>' : signed(r.lev); } },
-    { k: 'extProj', l: 'Ext Proj', t: 'Points projection from the uploaded file. Shown for comparison, never used as the projection. 0 = file has him not playing.', need: 'ext' },
-    { k: 'simExt', l: 'Sim minus Ext', t: 'Sim Proj minus the file projection. Colored at 5 points or more either way. Blank when the file has 0.', need: 'ext', h: function (r) { return r.simExt == null ? NA : Math.abs(r.simExt) >= 5 ? '<span class="' + (r.simExt > 0 ? 'pos' : 'neg') + '">' + signed(r.simExt) + '</span>' : signed(r.simExt); } },
+    { k: 'extProj', l: 'Ext Proj', t: 'Points projection from the uploaded file. 0 = file has him not playing.', need: 'ext' },
+    { k: 'rawSim', l: 'Raw sim', t: 'The sim projection before it is pulled toward the uploaded projection. Proj, Floor, Ceiling and the value odds all use the pulled number. On 174 slates since October 2025 the file alone missed by 7.43 points per player and the raw sim (with file minutes) by 7.72; raw sim plays at 5.5x or better came in 2.3 points under their number, the file was even.', need: 'anch' },
+    { k: 'simExt', l: 'Sim minus Ext', t: 'Raw sim minus the file projection. Colored at 5 points or more either way. Blank when the file has 0.', need: 'ext', h: function (r) { return r.simExt == null ? NA : Math.abs(r.simExt) >= 5 ? '<span class="' + (r.simExt > 0 ? 'pos' : 'neg') + '">' + signed(r.simExt) + '</span>' : signed(r.simExt); } },
     { k: 'rmin', l: 'Min %', t: 'Minimum exposure for built lineups. 0 to 100, blank = none. Enter saves and moves down.', rule: 1, h: function (r) { return ruleInput(r, 'min', 'p'); } },
     { k: 'rmax', l: 'Max %', t: 'Maximum exposure for built lineups. 0 to 100, blank = none. 0 works like exclude.', rule: 1, h: function (r) { return ruleInput(r, 'max', 'p'); } },
     { k: 'rlx', l: 'L / X', t: 'L = lock into every lineup. X = exclude. Sorts locks first.', rule: 1, fx: 1, h: function (r) { return ruleToggles(r, 'p'); } },
@@ -5859,6 +5884,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     if (c.fixed) return true;
     if (c.rule) return false;                          // min/max/lock live on the Lineups page only
     if (c.need === 'ext' && !HASEXT) return false;
+    if (c.need === 'anch' && !ROWS.some(function (r) { return r.anch; })) return false;
     if (c.need === 'fmin' && !ROWS.some(function (r) { return r.fileMin != null; })) return false;
     if (c.need === 'kal' && !HASKAL) return false;
     if (!U.cols) { U.cols = {}; try { U.cols = JSON.parse(ls('nbasim.cols3') || '{}') || {}; } catch (e) { U.cols = {}; } }
@@ -5976,10 +6002,11 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     var body = '<div class="xl"><b>Unmatched in file (' + un.length + ')</b>' + (un.length ? '<ul class="plain">' + un.map(function (v) { return '<li>' + nm(v) + '</li>'; }).join('') + '</ul>' : '<p class="note">None.</p>') +
       (miss.length ? '<b>Slate players $4,000+ not in file (' + miss.length + ')</b><ul class="plain">' + miss.map(function (v) { var r = BYID[String(v)]; return '<li>' + (r ? esc(r.name) + ' <span class="muted num">' + money(r.salary) + '</span>' : nm(v)) + '</li>'; }).join('') + '</ul><p class="note">These use the model estimate (est).</p>' : '') +
       (Array.isArray(x.newsAdj) && x.newsAdj.length ? '<b>News since the file (' + x.newsAdj.length + ')</b><ul class="plain">' + x.newsAdj.map(function (v) { return '<li>' + esc(v.name || v.dkId) + ': ' + esc(v.note) + '</li>'; }).join('') + '</ul>' : '') +
+      (function () { var fp = call('fileProjInfo') || {}; if (!fp.n) return ''; return '<b>File projections</b><p class="note">' + fp.n + ' players have a projection' + (fp.n < 20 ? ', too few to use.' : '. Weight on the file in Proj, Floor, Ceiling and value odds: <select data-ch="fileprojw" aria-label="Weight on file projections">' + [0, 50, 65, 80, 100].map(function (w) { return '<option value="' + w + '"' + (Math.round((fp.w || 0) * 100) === w ? ' selected' : '') + '>' + (w ? w + '%' : 'off') + '</option>'; }).join('') + '</select> The sim keeps its own shape for each player; only the level moves. Changing it reruns the sims.') + '</p>'; })() +
       (function () { var fi = call('fileMinInfo') || {}; if (!fi.n) return '<p class="note">No minutes column in this file (looks for ExpectedMinutes or Minutes).</p>'; return '<b>File minutes</b><p class="note">' + fi.n + ' players have minutes' + (fi.n < 20 ? ', too few to use.' : '. Weight in the sim: <select data-ch="fileminw" aria-label="Weight on file minutes">' + [0, 50, 75, 100].map(function (w) { return '<option value="' + w + '"' + (Math.round((fi.w || 0) * 100) === w ? ' selected' : '') + '>' + (w ? w + '%' : 'off') + '</option>'; }).join('') + '</select> Changing it reruns the sims. 0 minutes and 0 points in the file = out.') + '</p>'; })() +
       (wr.length ? '<b>Warnings</b><ul class="plain">' + wr.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul>' : '') +
       '<p class="note">' + [x.uploadedAt ? 'Loaded ' + when(x.uploadedAt) : '', num(x.fileOwnSum != null ? x.fileOwnSum : x.ownSum) != null ? 'file ownership sums to ' + (num(x.fileOwnSum != null ? x.fileOwnSum : x.ownSum) * 100).toFixed(0) + '%' : ''].filter(Boolean).join(', ') + '</p></div>';
-    return er + '<span class="xchip" id="nb-xchip"><details class="pop"><summary title="Ownership / projections file. Click for unmatched names.">Own file: <b>' + esc(x.fileName || 'uploaded') + '</b>, ' + (num(x.matched) || 0) + ' matched, ' + un.length + ' unmatched' + ((call('fileMinInfo') || {}).on ? ', minutes in use' : '') + (Array.isArray(x.newsAdj) && x.newsAdj.length ? ', ' + x.newsAdj.length + ' news fixes' : '') + '</summary><div class="pop-body menu xpop">' + body + '</div></details><button type="button" class="btn sm" data-act="extclear" title="Remove the file. Own % goes back to the model estimate.">Clear</button></span>';
+    return er + '<span class="xchip" id="nb-xchip"><details class="pop"><summary title="Ownership / projections file. Click for unmatched names.">Own file: <b>' + esc(x.fileName || 'uploaded') + '</b>, ' + (num(x.matched) || 0) + ' matched, ' + un.length + ' unmatched' + ((call('fileMinInfo') || {}).on ? ', minutes in use' : '') + (x.lockKept ? ', ' + x.lockKept + ' locked players kept from the earlier file' : '') + (Array.isArray(x.newsAdj) && x.newsAdj.length ? ', ' + x.newsAdj.length + ' news fixes' : '') + '</summary><div class="pop-body menu xpop">' + body + '</div></details><button type="button" class="btn sm" data-act="extclear" title="Remove the file. Own % goes back to the model estimate.">Clear</button></span>';
   }
   /* ---------- players tab ---------- */
   function gameList() { var g = get(S, 'slate.games') || get(S, 'result.games') || []; return g.filter(function (x) { return x && x.key; }); }
@@ -6209,7 +6236,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     return '<div class="grid">' + list.map(function (sg) { return safe(function () {
       var g = by[sg.key] || {}, away = g.away || sg.away, home = g.home || sg.home, od = get(S, 'DB.odds') || {}, mk = g.market || od[sg.key] || null;
       var tot = mk && num(mk.total), sp = mk && num(mk.spreadHome), ih = tot != null && sp != null ? tot / 2 - sp / 2 : null, ia = tot != null && sp != null ? tot / 2 + sp / 2 : null, wp = num(g.winProbHome);
-      function side(t) { var tp = topFor(t, 5); return '<div style="min-width:0"><h4>' + esc(t) + ' top projected</h4>' + (tp.length ? '<table class="mini fit top" data-sid="gt:' + esc(t) + '"><thead><tr><th>Player</th><th class="n c1">Salary</th><th class="n c2">Proj</th></tr></thead><tbody>' + tp.map(function (r) { return '<tr class="row" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="el" title="' + esc(r.name) + '">' + esc(r.name) + '</td><td class="n c1">' + money(r.salary) + '</td><td class="n c2">' + f(r.proj) + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="note">n/a</p>') + '</div>'; }
+      function side(t) { var tp = topFor(t, 5); return '<div style="min-width:0"><h4>' + esc(t) + ' top projected</h4>' + (tp.length ? '<table class="mini fit top" data-sid="gt:' + esc(t) + '"><thead><tr><th>Player</th><th class="n c1">Salary</th><th class="n c2">Proj</th></tr></thead><tbody>' + tp.map(function (r) { return '<tr class="row" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="el" title="' + esc(r.name) + '">' + esc(r.name) + pt(r, 'p') + '</td><td class="n c1">' + money(r.salary) + '</td><td class="n c2">' + f(r.proj) + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="note">n/a</p>') + '</div>'; }
       function rng(o) { return o && num(o.mean) != null ? f(o.mean) + '<span class="sub">' + f(o.p10, 0) + ' to ' + f(o.p90, 0) + '</span>' : NA; }
       return '<section class="card"><h3><span>' + esc(away) + ' @ ' + esc(home) + '</span><span class="muted num">' + txt(g.time || sg.time) + '</span></h3>' +
         '<table class="mini fit gm" data-sid="gm:' + esc(sg.key) + '"><thead><tr><th>Line</th><th class="n">' + esc(away) + '</th><th class="n">' + esc(home) + '</th><th class="n">Total</th></tr></thead><tbody>' +
@@ -6243,7 +6270,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       h += '<h4>Starters <span class="tag ' + (st && st.confirmed ? 'PROBABLE' : 'GTD') + '">' + (st && st.confirmed ? 'CONFIRMED' : 'PROJECTED') + '</span></h4>' + (five.length ? '<table class="mini" data-sid="ts:' + esc(t) + '"><thead><tr><th>Starter</th><th>Pos</th><th class="n">Start %</th></tr></thead><tbody>' + five.map(function (id) { var r = BYID[String(id)] || {}, ps = st && st.probs && num(st.probs[id]) != null ? st.probs[id] : r.pStart;
         return '<tr class="row" data-act="card" data-v="' + esc(id) + '" tabindex="0"><td>' + esc(nameOf(id)) + (r.id ? playTag(r) : '') + '</td><td>' + esc(r.pos || '') + '</td><td class="n">' + pct(ps) + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="note">n/a</p>') + (st && (st.source || st.note) ? '<p class="note clamp2" title="' + esc([st.source, st.note].filter(Boolean).join('. ')) + '">' + esc([st.source, st.note].filter(Boolean).join('. ')) + '</p>' : '');
       rot = rot.filter(function (x) { return x && num(x.min) >= 0.05; });
-      h += '<h4>Rotation minutes</h4>' + (rot.length ? '<div class="slist" data-sid="tr:' + esc(t) + '">' + shead(['Player', 'Min']) + '<div>' + rot.map(function (x) { var m = num(x.min); return '<div class="barrow" data-srow="1" data-s0="' + esc(x.name || nameOf(x.dkId)) + '" data-s1="' + (m == null ? '' : m) + '"' + (num(x.minSd) != null ? ' title="' + esc((x.name || nameOf(x.dkId)) + ': ' + (m == null ? 'n/a' : m.toFixed(1)) + ' min, sd ' + (+x.minSd).toFixed(1)) + '"' : '') + '><span class="row" data-act="card" data-v="' + esc(x.dkId) + '" tabindex="0" role="button" style="cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.name || nameOf(x.dkId)) + '</span><span class="track"><i class="' + (num(x.pStart) >= 0.5 ? '' : 'b') + '" style="width:' + (m == null ? 0 : Math.min(100, m / 48 * 100)).toFixed(1) + '%"></i></span><span class="num" style="text-align:right">' + f(m) + '</span></div>'; }).join('') + '</div></div>' : '<p class="note">n/a</p>');
+      h += '<h4>Rotation minutes</h4>' + (rot.length ? '<div class="slist" data-sid="tr:' + esc(t) + '">' + shead(['Player', 'Min']) + '<div>' + rot.map(function (x) { var m = num(x.min); return '<div class="barrow" data-srow="1" data-s0="' + esc(x.name || nameOf(x.dkId)) + '" data-s1="' + (m == null ? '' : m) + '"' + (num(x.minSd) != null ? ' title="' + esc((x.name || nameOf(x.dkId)) + ': ' + (m == null ? 'n/a' : m.toFixed(1)) + ' min, sd ' + (+x.minSd).toFixed(1)) + '"' : '') + '><span class="row" data-act="card" data-v="' + esc(x.dkId) + '" tabindex="0" role="button" style="cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.name || nameOf(x.dkId)) + pt(x.dkId, 'p') + '</span><span class="track"><i class="' + (num(x.pStart) >= 0.5 ? '' : 'b') + '" style="width:' + (m == null ? 0 : Math.min(100, m / 48 * 100)).toFixed(1) + '%"></i></span><span class="num" style="text-align:right">' + f(m) + '</span></div>'; }).join('') + '</div></div>' : '<p class="note">n/a</p>');
       if (T.topLineups && T.topLineups.length) h += '<details class="sub5"><summary>Top five-man units (rule-based rotation, not observed)</summary><table class="mini" data-sid="tu:' + esc(t) + '"><thead><tr><th>Unit</th><th class="n">Share of minutes</th></tr></thead><tbody>' + T.topLineups.slice(0, 5).map(function (l) { return '<tr><td class="wrap">' + (l.five || []).map(function (id) { return esc(nameOf(id).split(' ').slice(-1)[0]); }).join(', ') + '</td><td class="n">' + pct(l.share, 1) + '</td></tr>'; }).join('') + '</tbody></table></details>';
       else { var sn = get(S, 'news.stints'), sl2 = sn && sn[t]; if (sl2 && sl2.length) { var tot = sl2.reduce(function (a, x) { return a + (num(x && x.sec) || 0); }, 0), an = {}; (get(S, 'slate.players') || []).forEach(function (p) { if (p.athleteId != null) an[p.athleteId] = p.name; }); var dbp = get(S, 'DB.players') || {};
         h += '<details class="sub5"><summary>Top five-man units (season stints)</summary><table class="mini" data-sid="tu:' + esc(t) + '"><thead><tr><th>Unit</th><th class="n">Share of time</th><th class="n">Possessions</th></tr></thead><tbody>' + sl2.slice().sort(function (a, b) { return (b.sec || 0) - (a.sec || 0); }).slice(0, 5).map(function (l) { return '<tr><td class="wrap">' + (l.five || []).map(function (a) { return esc(String(an[a] || (dbp[a] && dbp[a].name) || a).split(' ').slice(-1)[0]); }).join(', ') + '</td><td class="n">' + (tot ? pct(l.sec / tot, 1) : NA) + '</td><td class="n">' + (num(l.poss) != null ? Math.round(l.poss) : '') + '</td></tr>'; }).join('') + '</tbody></table></details>'; } }
@@ -6254,7 +6281,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   function viewInj() {
     var I = S.impact || null, res = (I && I.results) || [], jobs = {}, nm = function (id) { var r = BYID[id]; return r ? r.name : id; };
     ((I && I.jobs) || []).forEach(function (j) { jobs[j.dkId] = j; });
-    var lnk = function (id) { var r = BYID[id]; return '<span class="lnk" data-act="card" data-v="' + esc(id) + '" role="button" tabindex="0">' + esc(r ? r.name : id) + '</span>'; };
+    var lnk = function (id) { var r = BYID[id]; return '<span class="lnk" data-act="card" data-v="' + esc(id) + '" role="button" tabindex="0">' + esc(r ? r.name : id) + '</span>' + pt(r); };
     var head = '<p class="count">Each player under 75% to play with a real role (DK average 12+ or $5k+) is simulated twice on the same seeds: he sits, he plays. Gain = sits minus plays, for teammates and opponents. ' +
       'Team strength is held at the market line, so a star\'s return does not raise his team total. Projections already price each absence by his chance to play; the gain column is the full swing if he sits. ' +
       'New and short absences are listed first; players out 5+ games (marked *) are already in teammates\' recent box scores, so their gains are old news.</p>';
@@ -6294,7 +6321,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     rows.sort(function (a, b) { return rank[a.status] - rank[b.status] || (b.salary || 0) - (a.salary || 0); });
     var mk = get(S, 'news.markets') || [];
     return '<p class="count">' + rows.length + ' tagged players. Open decisions first, then players already ruled out. Long text is cut to two lines: hover for all of it or click the row.</p><div class="tw"><table data-sid="news"><thead><tr><th>Player</th><th>Tm</th><th class="n">Sal</th><th>Status</th><th class="n">Play %</th><th>Injury</th><th>Blurb</th><th>Source</th><th>Updated</th><th>Market note</th></tr></thead><tbody>' +
-      (rows.map(function (r) { var n = r.n; return '<tr class="row' + (r.out ? ' out' : '') + '" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="nm">' + esc(r.name) + '</td><td>' + esc(r.team) + '</td><td class="n">' + money(r.salary) + '</td><td data-s="' + r.status + '"><span class="tag ' + r.status + '" style="margin:0" title="' + r.status + '">' + (STAT[r.status] || r.status) + '</span></td><td class="n">' + pct(r.pPlay) + '</td><td class="el2" title="' + esc(n.injury || '') + '">' + txt(n.injury) + '</td><td class="wrap"><div class="clamp2" title="' + esc(n.blurb || '') + '">' + txt(n.blurb) + '</div></td><td>' + (n.sourceUrl ? '<a href="' + esc(n.sourceUrl) + '" target="_blank" rel="noopener">' + esc(n.source || 'link') + '</a>' : txt(n.source || (r.s.dkStatus ? 'DK Status column' : ''))) + '</td><td>' + when(n.updated) + '</td><td class="wrap"><div class="clamp2" title="' + esc(n.marketNote || '') + '">' + txt(n.marketNote) + '</div></td></tr>'; }).join('') || '<tr><td colspan="10" class="muted">No tagged players.</td></tr>') + '</tbody></table></div>' +
+      (rows.map(function (r) { var n = r.n; return '<tr class="row' + (r.out ? ' out' : '') + '" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="nm">' + esc(r.name) + pt(r, 'p') + '</td><td>' + esc(r.team) + '</td><td class="n">' + money(r.salary) + '</td><td data-s="' + r.status + '"><span class="tag ' + r.status + '" style="margin:0" title="' + r.status + '">' + (STAT[r.status] || r.status) + '</span></td><td class="n">' + pct(r.pPlay) + '</td><td class="el2" title="' + esc(n.injury || '') + '">' + txt(n.injury) + '</td><td class="wrap"><div class="clamp2" title="' + esc(n.blurb || '') + '">' + txt(n.blurb) + '</div></td><td>' + (n.sourceUrl ? '<a href="' + esc(n.sourceUrl) + '" target="_blank" rel="noopener">' + esc(n.source || 'link') + '</a>' : txt(n.source || (r.s.dkStatus ? 'DK Status column' : ''))) + '</td><td>' + when(n.updated) + '</td><td class="wrap"><div class="clamp2" title="' + esc(n.marketNote || '') + '">' + txt(n.marketNote) + '</div></td></tr>'; }).join('') || '<tr><td colspan="10" class="muted">No tagged players.</td></tr>') + '</tbody></table></div>' +
       (mk.length ? '<h4 class="lbl" style="margin:14px 0 6px">Markets</h4><div class="tw"><table data-sid="markets"><thead><tr><th>Kind</th><th>Label</th><th class="n">Value</th><th>Source</th><th>Updated</th></tr></thead><tbody>' + mk.map(function (m) { m = m || {}; return '<tr><td>' + txt(m.kind) + '</td><td>' + txt(m.label) + '</td><td class="n">' + txt(m.value) + '</td><td>' + txt(m.source) + '</td><td>' + when(m.updated) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '');
   }
 
@@ -6403,10 +6430,10 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       '<button class="btn primary" data-act="lbrun"' + (L.busy ? ' disabled' : '') + '>' + (L.busy ? 'Building' : 'Build lineups') + '</button>' + (o && o.lineups.length ? '<button class="btn" data-act="lbexport">Export lineups CSV</button>' : '') + '<span class="count">' + lockN.length + ' locked, ' + exN.length + ' excluded, ' + mmN.length + ' min/max</span>' + ruleChip() + '</div>' +
       '<p class="note">DK classic: PG, SG, SF, PF, C, G, F, UTIL. $50,000 cap, at least 2 games. Heuristic local search: strong lineups, not a proven optimum. 150 lineups can take several seconds. Rules are shared with the Contest sim; per-player Max % applies under the global max. OUT players, sim excludes and anyone under 50% to play are skipped unless locked. Uses all-sims means.</p>';
     h += '<div class="two lb2"><div><div class="tw" style="max-height:62vh"><table class="mini lbp" data-sid="lb-pool"><thead><tr><th class="rc" title="L = lock, X = exclude">L / X</th><th>Player</th><th>Pos</th><th class="n">Sal</th><th class="n">FP</th><th class="n" title="Field ownership' + (HASEXT ? ' from the uploaded file' : ', model estimate (unvalidated)') + '">Own %</th><th class="fx" data-cs="fix01" title="Share of sims at 4x, 5x, 6x and 7x salary. Number = 5x.">Value odds</th><th class="n rc" title="Minimum exposure. Blank = none.">Min %</th><th class="n rc" title="Maximum exposure. Blank = none.">Max %</th><th class="n">Exp</th></tr></thead><tbody>' + pool.map(function (r) { var e = o && o.cnt && o.lineups.length ? (o.cnt[r.id] || 0) / o.lineups.length : null;
-      var ru = ruleOf(r.id); return '<tr><td class="rc" data-s="' + (ru.lock ? 2 : ru.exclude ? -1 : 0) + '">' + ruleToggles(r, 'b') + '</td><td data-s="' + esc(r.name.toLowerCase()) + '"><span class="lnk" data-act="card" data-v="' + esc(r.id) + '" role="button" tabindex="0">' + esc(r.name) + '</span>' + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + ' <span class="muted">' + esc(r.team) + (r.pPlay != null && r.pPlay < 0.5 ? ', ' + Math.round(r.pPlay * 100) + '% to play, lock to use' : '') + '</span></td><td>' + esc(r.pos) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(metricOf(r, L.metric)) + '</td><td class="n" data-s="' + (r.own == null ? '' : r.own) + '">' + pct(r.own, 1) + '</td><td class="fx" data-s="' + (r.x5 == null ? '' : r.x5) + '">' + strip(r) + '</td><td class="n rc" data-s="' + (ru.min == null ? '' : ru.min) + '">' + ruleInput(r, 'min', 'b') + '</td><td class="n rc" data-s="' + (ru.max == null ? '' : ru.max) + '">' + ruleInput(r, 'max', 'b') + '</td><td class="n">' + (e == null ? '' : pct(e)) + '</td></tr>'; }).join('') + '</tbody></table></div></div><div>';
+      var ru = ruleOf(r.id); return '<tr><td class="rc" data-s="' + (ru.lock ? 2 : ru.exclude ? -1 : 0) + '">' + ruleToggles(r, 'b') + '</td><td data-s="' + esc(r.name.toLowerCase()) + '"><span class="lnk" data-act="card" data-v="' + esc(r.id) + '" role="button" tabindex="0">' + esc(r.name) + '</span>' + pt(r) + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + ' <span class="muted">' + esc(r.team) + (r.pPlay != null && r.pPlay < 0.5 ? ', ' + Math.round(r.pPlay * 100) + '% to play, lock to use' : '') + '</span></td><td>' + esc(r.pos) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(metricOf(r, L.metric)) + '</td><td class="n" data-s="' + (r.own == null ? '' : r.own) + '">' + pct(r.own, 1) + '</td><td class="fx" data-s="' + (r.x5 == null ? '' : r.x5) + '">' + strip(r) + '</td><td class="n rc" data-s="' + (ru.min == null ? '' : ru.min) + '">' + ruleInput(r, 'min', 'b') + '</td><td class="n rc" data-s="' + (ru.max == null ? '' : ru.max) + '">' + ruleInput(r, 'max', 'b') + '</td><td class="n">' + (e == null ? '' : pct(e)) + '</td></tr>'; }).join('') + '</tbody></table></div></div><div>';
     if (!o) h += '<p class="note">No lineups built yet.</p>';
     else { if (o.msg) h += '<p class="note" role="status">' + esc(o.msg) + '</p>';
-      h += o.lineups.map(function (x, i) { return '<section class="card" style="margin-bottom:8px;padding:8px 10px"><h3 style="font-size:12px"><span>#' + (i + 1) + '</span><span class="num muted">' + money(x.sal) + ' | mean ' + f(x.mean) + (L.metric !== 'mean' ? ' | ' + esc(L.metric) + ' sum ' + f(x.met) : '') + '</span></h3><table class="mini" data-sid="lb-lu"><thead><tr><th>Slot</th><th>Player</th><th>Team</th><th class="n">Salary</th><th class="n">FP</th></tr></thead><tbody>' + x.lu.map(function (r, s) { return '<tr class="row" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="muted">' + SLOTS[s] + '</td><td>' + esc(r.name) + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + '</td><td>' + esc(r.team) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(r.fpMean) + '</td></tr>'; }).join('') + '</tbody></table></section>'; }).join(''); }
+      h += o.lineups.map(function (x, i) { return '<section class="card" style="margin-bottom:8px;padding:8px 10px"><h3 style="font-size:12px"><span>#' + (i + 1) + '</span><span class="num muted">' + money(x.sal) + ' | mean ' + f(x.mean) + (L.metric !== 'mean' ? ' | ' + esc(L.metric) + ' sum ' + f(x.met) : '') + '</span></h3><table class="mini" data-sid="lb-lu"><thead><tr><th>Slot</th><th>Player</th><th>Team</th><th class="n">Salary</th><th class="n">FP</th></tr></thead><tbody>' + x.lu.map(function (r, s) { return '<tr class="row" data-act="card" data-v="' + esc(r.id) + '" tabindex="0"><td class="muted">' + SLOTS[s] + '</td><td>' + esc(r.name) + pt(r, 'p') + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + '</td><td>' + esc(r.team) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(r.fpMean) + '</td></tr>'; }).join('') + '</tbody></table></section>'; }).join(''); }
     return h + '</div></div>';
   }
   /* ---------- optimal lineups tab ---------- */
@@ -6499,7 +6526,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       fld('Lineups', 'n', 52, ' min="1" max="150" step="1"', 'Lineups to build') +
       '<label title="What the builder maximizes"><span class="lbl">Objective</span> <select data-ch="ctobj">' + [['roi', 'ROI'], ['win', 'Win %'], ['top1', 'Top 1 %'], ['cash', 'Cash %']].map(function (o) { return '<option value="' + o[0] + '"' + (C.obj === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
       fld('Unique', 'uniq', 44, ' min="1" max="7" step="1"', 'Minimum players different between any two built lineups') + fld('Max own sum %', 'maxOwn', 62, ' min="0" max="800" step="5" placeholder="any"', 'Skip lineups whose eight field Own % values add to more than this') +
-      '<label class="sw" title="Weight on the sim projection when the builder scores lineups. The rest goes to your uploaded projections (or DK average). Auto = 20% with an uploaded projections file, 50% without: in a Warehouse backtest of 175 real GPP slates, lower trust in the sim built better lineups when Domination Station projections were the consensus."><span class="lbl">Trust in sim</span> <input type="range" min="0" max="100" step="5" data-in="ctsimWeight" value="' + esc(C.simWeight == null ? autoSW() : C.simWeight) + '" aria-label="Trust in sim, percent"> <b class="num" id="nb-ct-sw">' + esc(C.simWeight == null ? autoSW() : C.simWeight) + '%' + (C.simWeight == null ? ' auto' : '') + '</b> <span class="hint">rest goes to your uploaded projections (or DK average)</span></label>' +
+      '<label class="sw" title="Weight on the sim projection when the builder scores lineups. The rest goes to your uploaded projections (or DK average). Auto = 20% with an uploaded projections file, 50% without: on 175 real GPPs since October 2025 (Warehouse), 20% beat 50% by 0.6 points of cash rate and 0.5 points of lineup score with top 1% the same; 0 to 35% were tied."><span class="lbl">Trust in sim</span> <input type="range" min="0" max="100" step="5" data-in="ctsimWeight" value="' + esc(C.simWeight == null ? autoSW() : C.simWeight) + '" aria-label="Trust in sim, percent"> <b class="num" id="nb-ct-sw">' + esc(C.simWeight == null ? autoSW() : C.simWeight) + '%' + (C.simWeight == null ? ' auto' : '') + '</b> <span class="hint">rest goes to your uploaded projections (or DK average)</span></label>' +
       fld('Floor % of field', 'floorRatio', 50, ' min="0" max="100" step="5"', 'Chalk floor: players owned over the next number get a min exposure of this share of their field ownership, unless you set your own min, a lower max, or excluded him. 0 = off.') +
       fld('for players owned over %', 'floorOwn', 50, ' min="0" max="100" step="1"', 'Field ownership at or above which the chalk floor applies') +
       fld('Max: field x', 'capMult', 44, ' min="0" max="20" step="0.5"', 'Leverage cap: unless you set your own max (or lock him), a player is held to this multiple of his field ownership plus the next number. Default 2x + 15 points: 4% owned caps at 23%, 10% at 35%, 30% at 75%. Blank both = off.') +
@@ -6528,7 +6555,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     h += '<div class="ctgrid"><div class="tw tall ol ct" id="nb-ctw" tabindex="0" aria-label="Built portfolio"><table class="ctp" id="nb-cttable" data-sid="ct-port"><thead><tr>' + th('#', 'Build order') + SLOTS.map(function (s) { return th(s, 'Sort by the player in this slot', 1); }).join('') +
       th('ROI', glossTip('ROI')) + th('Win %', glossTip('Win %')) + th('Top 1 %', glossTip('Top 1 %')) + th('Cash %', glossTip('Cash %')) + th('Avg finish', 'Average finish in the simulated field as top X% (lower is better)' + (dirKnown ? '' : '. Direction not stated by the engine; read as higher percentile = better finish.')) + th('Mean', 'Lineup DK points, mean across scored sims') + th('Median', 'Lineup DK points, median across scored sims. The cash-game number: sort here, or build with Objective = Cash %.') + th('P90', '90th percentile lineup DK points') + th('Sal') + th('Own sum', 'Sum of the eight field Own % values') + th('Dupes', glossTip('Expected dupes')) + '</tr></thead><tbody>' +
       L.map(function (l, i) { var ids = ctIds(l), cells = ids.map(function (id) { var r = BYID[id] || {}, nm = r.name || id;
-        return '<td class="olp" data-s="' + esc(String(nm).toLowerCase()) + '" title="' + esc(nm + (r.team ? ' (' + r.team + ')' : '') + (r.salary != null ? ' $' + r.salary : '')) + '"><span class="oln lnk" data-act="card" data-v="' + esc(id) + '" role="button" tabindex="0">' + esc(shortName(nm)) + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + (ruleOf(id).lock ? '<span class="tag L" title="Locked">L</span>' : '') + '</span><span class="sub num">' + esc(r.team || '') + (r.salary != null ? ' $' + (r.salary / 1000).toFixed(1) + 'k' : '') + (r.proj != null ? ' <b class="olfp" title="Sim average DK points">' + r.proj.toFixed(1) + '</b>' : '') + '</span></td>'; }).join('');
+        return '<td class="olp" data-s="' + esc(String(nm).toLowerCase()) + '" title="' + esc(nm + (r.team ? ' (' + r.team + ')' : '') + (r.salary != null ? ' $' + r.salary : '')) + '"><span class="oln lnk" data-act="card" data-v="' + esc(id) + '" role="button" tabindex="0">' + esc(shortName(nm)) + pt(r, 't') + (STAT[r.status] ? '<span class="tag ' + r.status + '" title="' + r.status + '">' + STAT[r.status] + '</span>' : '') + (ruleOf(id).lock ? '<span class="tag L" title="Locked">L</span>' : '') + '</span><span class="sub num">' + esc(r.team || '') + (r.salary != null ? ' $' + (r.salary / 1000).toFixed(1) + 'k' : '') + (r.proj != null ? ' <b class="olfp" title="Sim average DK points">' + r.proj.toFixed(1) + '</b>' : '') + '</span></td>'; }).join('');
         for (var z = ids.length; z < 8; z++) cells += '<td></td>';
         var ds = function (v) { v = num(v); return v == null ? '' : ' data-s="' + v + '"'; };
         return '<tr><td class="n">' + (i + 1) + '</td>' + cells + '<td class="n"' + ds(l.roi) + '>' + roiF(l.roi) + '</td><td class="n"' + ds(l.win) + '>' + pct(l.win, 2) + '</td><td class="n"' + ds(l.top1) + '>' + pct(l.top1, 1) + '</td><td class="n"' + ds(l.cash) + '>' + pct(l.cash, 1) + '</td><td class="n"' + ds(topOf(l.avgPct)) + '>' + (topOf(l.avgPct) == null ? NA : 'top ' + topOf(l.avgPct).toFixed(1) + '%') + '</td><td class="n">' + f(l.mean) + '</td><td class="n">' + f(l.p50) + '</td><td class="n">' + f(l.p90) + '</td><td class="n">' + money(l.salary) + '</td><td class="n"' + ds(l.ownSum) + '>' + pct(l.ownSum, 0) + '</td><td class="n">' + f(l.dupes, 2) + '</td></tr>'; }).join('') +
@@ -6553,7 +6580,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
         var uMin = ru.min != null && ru.min > 0 ? ru.min : null, uMax = ru.max != null && ru.max < 1 ? ru.max : null;
         var cap = bMax != null && !(urs[id] && urs[id].max != null);
         var chg = (flo ? false : Math.abs((bMin || 0) - (uMin || 0)) > 0.0005) || (cap ? false : Math.abs((bMax == null ? 1 : bMax) - (uMax == null ? 1 : uMax)) > 0.0005);
-        return '<tr><td><span class="row" data-act="card" data-v="' + esc(id) + '" tabindex="0" role="button">' + esc(r.name) + '</span>' + (STAT[r.status] ? '<span class="tag ' + r.status + '">' + STAT[r.status] + '</span>' : '') + (chg ? '<span class="tag OVR" title="Rule changed since this build. Re-build to apply.">new</span>' : '') + '<span class="sub muted">' + esc(r.team || '') + ' ' + (r.salary ? '$' + (r.salary / 1000).toFixed(1) + 'k' : '') + '</span></td>' +
+        return '<tr><td><span class="row" data-act="card" data-v="' + esc(id) + '" tabindex="0" role="button">' + esc(r.name) + '</span>' + pt(r) + (STAT[r.status] ? '<span class="tag ' + r.status + '">' + STAT[r.status] + '</span>' : '') + (chg ? '<span class="tag OVR" title="Rule changed since this build. Re-build to apply.">new</span>' : '') + '<span class="sub muted">' + esc(r.team || '') + ' ' + (r.salary ? '$' + (r.salary / 1000).toFixed(1) + 'k' : '') + '</span></td>' +
           '<td class="fx"' + ds(r.x5) + '>' + strip(r) + '</td><td class="n' + (miss ? ' bad' : '') + '"' + ds(b) + (miss ? ' title="Outside the min/max rule"' : '') + '>' + pct(b, 1) + '</td><td class="n"' + ds(fo) + '>' + pct(fo, 1) + '</td><td class="n"' + ds(d) + '>' + (d == null ? NA : '<span class="' + (d >= 5 ? 'pos' : d <= -5 ? 'neg' : '') + '">' + signed(d) + '</span>') + '</td>' +
           '<td class="n rc"' + ds(ru.min) + '>' + (flo ? '<span class="mk est" title="Min ' + pctIn(frac(e.minExp)) + '% from the chalk floor (share of field ownership). Type a min to override.">floor ' + pctIn(frac(e.minExp)) + '</span>' : '') + ruleInput(r, 'min', 'c') + '</td><td class="n rc"' + ds(ru.max) + '>' + (cap ? '<span class="mk est" title="Max ' + pctIn(bMax) + '% from the leverage cap (field ownership x multiple + points). Type a max to override.">cap ' + pctIn(bMax) + '</span>' : '') + ruleInput(r, 'max', 'c') + '</td><td class="rc" data-s="' + (ru.lock ? 2 : ru.exclude ? -1 : 0) + '">' + ruleToggles(r, 'c') + '</td>' +
           '<td class="n"' + ds(r.opt) + '>' + pct(r.opt, 1) + '</td><td class="n"' + ds(p.roiWith) + '>' + roiF(p.roiWith) + '</td><td class="n"' + ds(p.roiWithout) + '>' + roiF(p.roiWithout) + '</td><td class="n"' + ds(p.leverage) + '>' + (num(p.leverage) == null ? NA : signed(p.leverage * 100)) + '</td></tr>'; }).join('') +
@@ -6603,7 +6630,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       var ids = Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a] || ((BYID[b] || {}).salary || 0) - ((BYID[a] || {}).salary || 0); });
       var hasOpt = ids.some(function (id) { return BYID[id] && BYID[id].opt != null; });
       return '<section class="card" style="margin-top:12px"><h3><span>Exposure in the ' + shown.length + ' shown lineups</span><span class="muted num" style="font-size:12px;font-weight:400">' + ids.length + ' players</span></h3><div class="slist" data-sid="ol-expo">' + shead(['Player', 'Share of shown', hasOpt ? 'Optimal %' : null]) + '<div class="expo">' + ids.map(function (id) { var r = BYID[id] || {}, e = cnt[id] / shown.length;
-        return '<div class="barrow ex" data-srow="1" data-s0="' + esc(nameOf(id)) + '" data-s1="' + e + '" data-s2="' + (r.opt == null ? '' : r.opt) + '"><span class="row" data-act="card" data-v="' + esc(id) + '" tabindex="0" role="button" title="' + esc(nameOf(id)) + '">' + esc(nameOf(id)) + ' <span class="muted">' + esc(r.team || '') + '</span></span><span class="track"><i style="width:' + (e * 100).toFixed(1) + '%"></i></span><span class="num">' + pct(e) + (hasOpt ? ' <span class="muted">' + (r.opt == null ? 'n/a' : (r.opt * 100).toFixed(1) + '%') + '</span>' : '') + '</span></div>'; }).join('') + '</div></div><p class="note">Bar and first number = share of the shown lineups with the player.' + (hasOpt ? ' Grey number = Opt%: share of all sims where the player was in the optimal lineup.' : '') + '</p></section>'; }, 'exposure');
+        return '<div class="barrow ex" data-srow="1" data-s0="' + esc(nameOf(id)) + '" data-s1="' + e + '" data-s2="' + (r.opt == null ? '' : r.opt) + '"><span class="row" data-act="card" data-v="' + esc(id) + '" tabindex="0" role="button" title="' + esc(nameOf(id)) + '">' + esc(nameOf(id)) + pt(BYID[String(id)] || r) + '</span><span class="track"><i style="width:' + (e * 100).toFixed(1) + '%"></i></span><span class="num">' + pct(e) + (hasOpt ? ' <span class="muted">' + (r.opt == null ? 'n/a' : (r.opt * 100).toFixed(1) + '%') + '</span>' : '') + '</span></div>'; }).join('') + '</div></div><p class="note">Bar and first number = share of the shown lineups with the player.' + (hasOpt ? ' Grey number = Opt%: share of all sims where the player was in the optimal lineup.' : '') + '</p></section>'; }, 'exposure');
     return h;
   }
   function download(name, text) { try { var b = new Blob([text], { type: 'text/csv' }), a = doc.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; doc.body.appendChild(a); a.click(); a.remove(); } catch (e) { if (root.console) console.error(e); } }
@@ -6615,37 +6642,39 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   }
 
   /* ---------- main render ---------- */
+  /* position and team after a player's name, so the card does not have to be opened to see them. what: 'p' position only, 't' team only. */
+  function pt(r, what) { if (typeof r !== 'object' || !r) r = BYID[String(r)]; if (!r) return ''; var a = []; if (what !== 't' && r.pos) a.push(r.pos); if (what !== 'p' && r.team) a.push(r.team); return a.length ? ' <span class="pt">' + esc(a.join(' ')) + '</span>' : ''; }
   /* ---------- cash tab: high-floor plays ---------- */
   function cashRows() {
     var C = U.ct || {}, sw = num(C.simWeight), wSim = (sw == null ? autoSW() : Math.max(0, Math.min(100, sw))) / 100;
     return ROWS.filter(function (r) { return !r.out && r.salary > 0 && r.fpMean != null && (r.pPlay == null || r.pPlay >= 0.5) && r.fpMean >= 6; }).map(function (r) {
       var hx = get(r.p, 'hit.x') || {}, ext = HASEXT && r.extProj != null && r.extProj > 0 ? r.extProj : null;
-      var shift = ext == null ? 0 : (1 - wSim) * (ext - r.fpMean);   // lean the sim's range toward the uploaded projection by the same weight the builder uses
+      var shift = ext == null || r.anch ? 0 : (1 - wSim) * (ext - r.fpMean);   // lean the sim's range toward the uploaded projection by the same weight the builder uses
       var fl = r.p25 == null ? null : Math.max(0, r.p25 + shift), md = r.p50 == null ? null : Math.max(0, r.p50 + shift);
       return { r: r, fl: fl, md: md, flv: fl == null ? null : fl / r.salary * 1000, mdv: md == null ? null : md / r.salary * 1000, x3: num(hx[3]), x4: num(hx[4]), x5: num(hx[5]),
-        mn10: num(get(r.p, 'min.p10')), ext: ext, fileOut: HASEXT && r.extProj === 0 };
+        mn10: num(get(r.p, 'min.p10')), ext: ext, fileOut: HASEXT && r.extProj === 0, risk: (function () { var m = r.fileMin != null ? r.fileMin : r.min; return m == null ? null : m < 15 ? 2 : m < 25 ? 1 : 0; })() };
     }).sort(function (a, b) { return (b.flv || 0) - (a.flv || 0); });
   }
   function viewCash() {
     var rows = cashRows(), lnk = function (r) { return '<span class="lnk" data-act="card" data-v="' + esc(r.id) + '" role="button" tabindex="0">' + esc(r.name) + '</span>' + (STAT[r.status] ? ' <span class="tag ' + r.status + '">' + STAT[r.status] + '</span>' : ''); };
     var head = '<p class="count">High-floor plays for cash games, sorted by <b>Floor value</b>: the 25th percentile outcome per $1,000 of salary, counting the nights he sits or gets hurt. ' +
-      (HASEXT ? 'Floor and Median are pulled toward your uploaded projections by the same weight the lineup builder uses. ' : 'Upload a projections file and Floor and Median lean toward it; that combination tested best. ') +
+      (HASEXT ? 'Floor and Median are pulled toward your uploaded projections (weight set on the file chip). ' : 'Upload a projections file and Floor and Median lean toward it; that combination tested best. ') +
       'Backtest, 310 main slates from the Warehouse: the top 20 by floor value reached 4x salary 75% of the time and fell under 3x 10% of the time (78% and 8% with uploaded projections blended in), against 71% and 14% for the top 20 by projection per dollar. ' +
       'Ceiling does not count here.</p>';
     if (!rows.length) return head + '<p class="muted">No projections yet.</p>';
     var pos = ['PG', 'SG', 'SF', 'PF', 'C'], core = pos.map(function (ps) {
       var top = rows.filter(function (x) { return x.r.elig.indexOf(ps) >= 0 && (x.r.pPlay == null || x.r.pPlay >= 0.9); }).slice(0, 4);
-      return '<tr><td>' + ps + '</td>' + [0, 1, 2, 3].map(function (i) { var x = top[i]; return '<td class="wrap">' + (x ? lnk(x.r) + ' <span class="muted">' + money(x.r.salary) + ', ' + f(x.flv, 2) + '</span>' : NA) + '</td>'; }).join('') + '</tr>';
+      return '<tr><td>' + ps + '</td>' + [0, 1, 2, 3].map(function (i) { var x = top[i]; return '<td class="wrap">' + (x ? lnk(x.r) + pt(x.r) + ' <span class="muted">' + money(x.r.salary) + ', ' + f(x.flv, 2) + '</span>' : NA) + '</td>'; }).join('') + '</tr>';
     }).join('');
     var th = function (l, t, cs) { return '<th class="n"' + (cs ? ' data-cs="' + cs + '"' : '') + (t ? ' title="' + esc(t) + '"' : '') + '>' + l + '</th>'; };
     return head +
       '<h4 class="lbl" style="margin:10px 0 6px">Best floor value by position (90%+ to play)</h4><div class="tw"><table class="mini" data-sid="cash-core"><thead><tr><th>Pos</th><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>' + core + '</tbody></table></div>' +
       '<h4 class="lbl" style="margin:14px 0 6px">All plays</h4><div class="tw"><table data-sid="cash"><thead><tr><th>Player</th><th>Pos</th><th>Team</th><th>Opp</th>' +
-      th('Sal') + th('ITT', 'Implied team total') + th('Play', 'Chance he plays', 'fix01') + th('Start', 'Chance he starts', 'fix01') + th('Min', 'Projected minutes, all sims') + (ROWS.some(function (r) { return r.fileMin != null; }) ? th('File min', 'Minutes in the uploaded file') : '') + th('Min floor', '10th percentile minutes, all sims. 0 means he sits in at least 1 sim in 10.') +
+      th('Sal') + th('ITT', 'Implied team total') + th('Play', 'Chance he plays', 'fix01') + th('Start', 'Chance he starts', 'fix01') + th('Min', 'Projected minutes, all sims') + (ROWS.some(function (r) { return r.fileMin != null; }) ? th('File min', 'Minutes in the uploaded file') : '') + th('Min floor', '10th percentile minutes, all sims. 0 means he sits in at least 1 sim in 10.') + '<th data-cs="0" title="How often players like this sat or fell well short, 174 slates since October 2025, players expected to play. Under 15 projected minutes: 19% did not play and 38% got under 60% of their minutes. 15 to 25: 3% and 13%. 25 or more: 0.2% and 3%.">Sit risk</th>' +
       th('Floor', '25th percentile DK points, all sims' + (HASEXT ? ', leaned toward the uploaded projection' : '')) + th('Median', 'Median DK points, all sims' + (HASEXT ? ', leaned toward the uploaded projection' : '')) +
       th('Floor value', 'Floor per $1,000. Sort key.') + th('Med value', 'Median per $1,000') + th('3x', 'Chance of 3x salary or better, all sims, corrected against past results', 'fix01') + th('4x', 'Chance of 4x salary or better, all sims, corrected against past results', 'fix01') + th('5x', 'Chance of 5x salary or better, all sims, corrected against past results', 'fix01') +
       (HASEXT ? th('File proj', 'Uploaded projection') : '') + (HASOWN ? th('Own', 'Projected ownership') : '') + '</tr></thead><tbody>' +
-      rows.map(function (x) { var r = x.r; return '<tr><td>' + lnk(r) + (x.fileOut ? ' <span class="mk" title="The uploaded file projects him for 0">file 0</span>' : '') + '</td><td>' + esc(r.pos) + '</td><td>' + esc(r.team) + '</td><td>' + esc(r.opp) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(r.itt) + '</td><td class="n">' + pct(r.pPlay) + '</td><td class="n">' + pct(r.pStart) + '</td><td class="n">' + f(r.min) + '</td>' + (ROWS.some(function (q) { return q.fileMin != null; }) ? '<td class="n">' + f(r.fileMin, 0) + '</td>' : '') + '<td class="n">' + f(x.mn10) + '</td><td class="n">' + f(x.fl) + '</td><td class="n">' + f(x.md) + '</td><td class="n"><b>' + f(x.flv, 2) + '</b></td><td class="n">' + f(x.mdv, 2) + '</td><td class="n">' + pct(x.x3) + '</td><td class="n">' + pct(x.x4) + '</td><td class="n">' + pct(x.x5) + '</td>' +
+      rows.map(function (x) { var r = x.r; return '<tr><td>' + lnk(r) + (x.fileOut ? ' <span class="mk" title="The uploaded file projects him for 0">file 0</span>' : '') + '</td><td>' + esc(r.pos) + '</td><td>' + esc(r.team) + '</td><td>' + esc(r.opp) + '</td><td class="n">' + money(r.salary) + '</td><td class="n">' + f(r.itt) + '</td><td class="n">' + pct(r.pPlay) + '</td><td class="n">' + pct(r.pStart) + '</td><td class="n">' + f(r.min) + '</td>' + (ROWS.some(function (q) { return q.fileMin != null; }) ? '<td class="n">' + f(r.fileMin, 0) + '</td>' : '') + '<td class="n">' + f(x.mn10) + '</td><td data-s="' + (x.risk == null ? '' : x.risk) + '">' + (x.risk == null ? NA : '<span class="tag ' + ['', 'Q', 'OUT'][x.risk] + '">' + ['low', 'some', 'high'][x.risk] + '</span>') + '</td><td class="n">' + f(x.fl) + '</td><td class="n">' + f(x.md) + '</td><td class="n"><b>' + f(x.flv, 2) + '</b></td><td class="n">' + f(x.mdv, 2) + '</td><td class="n">' + pct(x.x3) + '</td><td class="n">' + pct(x.x4) + '</td><td class="n">' + pct(x.x5) + '</td>' +
         (HASEXT ? '<td class="n">' + f(x.ext) + '</td>' : '') + (HASOWN ? '<td class="n">' + pct(r.own, 1) + '</td>' : '') + '</tr>'; }).join('') + '</tbody></table></div>';
   }
 
@@ -6719,7 +6748,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     if (notes.length) h += '<details class="sub5"><summary>' + notes.length + ' entry notes</summary><ul class="plain note">' + notes.slice(0, 60).map(function (x) { return '<li>Entry ' + esc(x[0]) + ': ' + esc(x[1].join(' ')) + '</li>'; }).join('') + '</ul></details>';
     if (R && Array.isArray(R.overCap) && R.overCap.length) h += '<p class="note">Over the exposure cap (locked or forced): ' + R.overCap.map(function (x) { return esc(nameOf(x.dkId)) + ' ' + x.count; }).join(', ') + '.</p>';
     if (R && Array.isArray(R.exposures) && R.exposures.length) h += '<section class="card" style="margin-top:12px"><h3><span>Exposure after swap</span><span class="muted num" style="font-size:12px;font-weight:400">' + R.exposures.length + ' players</span></h3><div class="slist" data-sid="ls-expo">' + shead(['Player', 'Share of entries']) + '<div class="expo">' + R.exposures.slice().sort(function (a, b) { return (b.count || 0) - (a.count || 0); }).slice(0, 60).map(function (x) { var pc = num(x.pct) != null ? x.pct : (E.entries.length ? 100 * x.count / E.entries.length : 0);
-      return '<div class="barrow ex" data-srow="1" data-s0="' + esc(nameOf(x.dkId)) + '" data-s1="' + pc + '"><span class="row" data-act="card" data-v="' + esc(x.dkId) + '" tabindex="0" role="button">' + esc(nameOf(x.dkId)) + ' <span class="muted">' + esc((BYID[String(x.dkId)] || {}).team || '') + '</span></span><span class="track"><i style="width:' + Math.max(0, Math.min(100, pc)).toFixed(1) + '%"></i></span><span class="num">' + pc.toFixed(0) + '% <span class="muted">' + (num(x.count) != null ? x.count : '') + '</span></span></div>'; }).join('') + '</div></div></section>';
+      return '<div class="barrow ex" data-srow="1" data-s0="' + esc(nameOf(x.dkId)) + '" data-s1="' + pc + '"><span class="row" data-act="card" data-v="' + esc(x.dkId) + '" tabindex="0" role="button">' + esc(nameOf(x.dkId)) + pt(x.dkId) + '</span><span class="track"><i style="width:' + Math.max(0, Math.min(100, pc)).toFixed(1) + '%"></i></span><span class="num">' + pc.toFixed(0) + '% <span class="muted">' + (num(x.count) != null ? x.count : '') + '</span></span></div>'; }).join('') + '</div></div></section>';
     return h;
   }
   function playTagShort(r) { if (r.out) return '<span class="tag OUT" title="Out">OUT</span>'; var ab = STAT[r.status]; return ab ? '<span class="tag ' + r.status + '" title="' + r.status + (r.pPlay != null ? ', Play % ' + Math.round(r.pPlay * 100) : '') + '">' + ab + '</span>' : ''; }
@@ -6856,6 +6885,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     if (t.getAttribute && t.getAttribute('data-ch') === 'archjson') { var fj = t.files && t.files[0]; t.value = ''; importArchJSON(fj); return; }
     if (t.getAttribute && t.getAttribute('data-ch') === 'swapfile') { var sf = t.files && t.files[0]; if (sf) { U.ls.res = null; U.ls.msg = ''; call('loadEntries', sf); } t.value = ''; return; }
     if (t.getAttribute && t.getAttribute('data-ch') === 'fileminw') { call('setFileMinW', t.value); return; }
+    if (t.getAttribute && t.getAttribute('data-ch') === 'fileprojw') { call('setFileProjW', t.value); return; }
     if (t.id === 'nb-extfile') { var xf = t.files && t.files[0]; if (xf) call('loadExt', xf); t.value = ''; return; }
     if (t.getAttribute && t.getAttribute('data-rk')) { setTimeout(function () { commitRule(t); }, 0); return; } // after focus moves, so Tab lands where the user meant
     if (t.id === 'nb-file') { var fl = t.files && t.files[0]; if (fl) call('onFile', fl); t.value = ''; return; }
@@ -6915,7 +6945,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   if (typeof module !== 'undefined' && module.exports) module.exports = NBAUI;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>globalThis.__NBA_BUILD__="2026-11-17 22:41 UTC";</script>
+<script>globalThis.__NBA_BUILD__="2026-11-18 07:20 UTC";</script>
 <script>/* NBA DK Sim Lab: controller. Glues NBAData, NBANews, NBAEngine, NBAUI. */
 (function () {
   'use strict';
@@ -7086,12 +7116,18 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
      A player the file has at 0 minutes and 0 points is treated as out unless a manual override says otherwise. Needs 20+ players with minutes. */
   function fileMinW() { var v = +LS.get('nba_fileminw', 75); return isFinite(v) ? Math.max(0, Math.min(100, v)) / 100 : 0.75; }
   function fileMinInfo() { var by = state.ext && state.ext.byDk, n = 0; if (by) Object.keys(by).forEach(function (id) { if (+by[id].minutes > 0) n++; }); return { n: n, on: n >= 20 && fileMinW() > 0, w: fileMinW() }; }
+  /* Projections from the file anchor the sim's reported projection and ranges (engine scales each player's outcomes, default 80% file).
+     Needs 20+ players with a projection. Lineup building is not touched by this: it mixes raw sim and file by its own sim weight. */
+  function fileProjW() { var v = +LS.get('nba_fileprojw', 80); return isFinite(v) ? Math.max(0, Math.min(100, v)) / 100 : 0.8; }
+  function fileProjInfo() { var by = state.ext && state.ext.byDk, n = 0; if (by) Object.keys(by).forEach(function (id) { if (+by[id].proj > 0) n++; }); return { n: n, on: n >= 20 && fileProjW() > 0, w: fileProjW() }; }
   function withFileMinutes(news) {
-    var fi = fileMinInfo(); if (!fi.on) return news;
+    var fi = fileMinInfo(), fp = fileProjInfo(); if (!fi.on && !fp.on) return news;
     news = news || { players: {} }; news.players = news.players || {};
     var by = state.ext.byDk, ov = state.settings.overrides || {};
     Object.keys(by).forEach(function (id) {
-      var e = by[id], mn = e.minutes; if (mn == null || !isFinite(+mn)) return;
+      var e = by[id], mn = e.minutes;
+      if (fp.on && +e.proj > 0) { var rp = news.players[id] = news.players[id] || {}; rp.extProj = +e.proj; rp.extProjW = fp.w; }
+      if (!fi.on || mn == null || !isFinite(+mn)) return;
       var rec = news.players[id] = news.players[id] || {};
       if (+mn > 0) { rec.extMin = +mn; rec.extMinW = fi.w; }
       else if (!(+e.proj > 0) && !(ov[id] && ov[id].pPlay != null)) { rec.pPlay = 0; rec.fileOut = true; rec.reasons = (rec.reasons || []).concat(['The uploaded file has him at 0 minutes.']); }
@@ -7228,19 +7264,28 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     var parsed = G.NBAExt.parse(text);
     if (!parsed) { state.extError = 'Not an ownership or projections file: needs a name column plus ownership or points.'; render(); return null; }
     var m = G.NBAExt.match(parsed, state.slate);
+    // Late swap: a file re-uploaded after some games have tipped only updates the games still open. Players in started games keep
+    // the numbers from the file that was loaded before their tip, so their projections and minutes stay as they were at lock.
+    var kept = 0;
+    if (state.ext && state.ext.byDk && !(opts && opts.noLockKeep)) { var lt = lockedTeams(); if (Object.keys(lt).length) state.slate.players.forEach(function (p) { var old = state.ext.byDk[p.dkId]; if (lt[p.team] && old) { m.byDk[p.dkId] = old; kept++; } }); }
+    m.lockKept = kept;
     state.ext = Object.assign(m, { fileName: (file && file.name) || (opts && opts.fileName) || 'ownership.csv', uploadedAt: new Date().toISOString(), cols: parsed.cols, warnings: parsed.warnings, fileOwnSum: parsed.ownSum });
     state.extError = null;
     try { var k = extKey(); if (k && !(opts && opts.noSave)) LS.set(k, { text: text.length < 400000 ? text : null, fileName: state.ext.fileName, uploadedAt: state.ext.uploadedAt }); } catch (e) { }
     applyFieldOwnership();
     render();
     // the file's minutes feed the sim, so a new file with minutes needs a fresh run
-    if (!(opts && opts.noRerun) && fileMinInfo().on && state.result && state.DB && !state.busy) { try { await rerun(); } catch (e) { console.error(e); } }
+    if (!(opts && opts.noRerun) && (fileMinInfo().on || fileProjInfo().on) && state.result && state.DB && !state.busy) { try { await rerun(); } catch (e) { console.error(e); } }
     return state.ext;
   }
+  function lockedTeams(now) { var sl = state.slate, out = {}, t = now || Date.now(); if (!sl || !G.NBALateSwap || !G.NBALateSwap.tipMs) return out;
+    (sl.games || []).forEach(function (g) { var tip = g.time ? G.NBALateSwap.tipMs(sl.date, g.time) : null; if (tip && t > tip) { out[g.away] = 1; out[g.home] = 1; } }); return out; }
   function clearExt() {
+    var had = fileMinInfo().on || fileProjInfo().on;
     state.ext = null; state.extError = null;
     try { var k = extKey(); if (k) localStorage.removeItem(k); } catch (e) { }
     applyFieldOwnership(); render();
+    if (had && state.result && state.DB && !state.busy) { try { var pr = rerun(); if (pr && pr.catch) pr.catch(function (e) { console.error(e); }); } catch (e) { console.error(e); } }
   }
   function restoreExt() {
     try { var k = extKey(), v = k ? LS.get(k, null) : null; if (v && v.text) loadExt(v.text, { fileName: v.fileName, noSave: true }); } catch (e) { }
@@ -7489,9 +7534,9 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   }
 
   var app = {
-    onFile: onFile, rerun: rerun, fileMinInfo: fileMinInfo, setFileMinW: function (v) { LS.set('nba_fileminw', Math.max(0, Math.min(100, +v || 0))); return rerun(); }, setOverride: setOverride, clearOverrides: clearOverrides, exportCSV: exportCSV, refreshLive: refreshLive,
+    onFile: onFile, rerun: rerun, fileProjInfo: fileProjInfo, setFileProjW: function (v) { LS.set('nba_fileprojw', Math.max(0, Math.min(100, +v || 0))); return rerun(); }, fileMinInfo: fileMinInfo, setFileMinW: function (v) { LS.set('nba_fileminw', Math.max(0, Math.min(100, +v || 0))); return rerun(); }, setOverride: setOverride, clearOverrides: clearOverrides, exportCSV: exportCSV, refreshLive: refreshLive,
     dismissAlerts: dismissAlerts, linesHistory: linesHistory, loadExt: loadExt, clearExt: clearExt, setExposure: setExposure, clearExposure: clearExposure, runContest: runContest, loadEntries: loadEntries, optimizeEntries: optimizeEntries, downloadEntries: downloadEntries,
-    get lateSwap() { return G.NBALateSwap; }, get own() { return G.NBAOwn; }, _diffAlerts: diffAlerts, _snapshot: snapshot, _engineInput: engineInput,
+    get lateSwap() { return G.NBALateSwap; }, get own() { return G.NBAOwn; }, _diffAlerts: diffAlerts, _snapshot: snapshot, _engineInput: engineInput, _lockedTeams: lockedTeams,
     get archive() { return G.NBAData && G.NBAData.archive; }, getState: function () { return state; }, parseSlate: parseSlate
   };
   G.NBAApp = app;
