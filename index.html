@@ -3819,14 +3819,14 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 <script id="engine-src">/* NBA DK Sim Lab engine. Possession-level rotation simulation. No deps, no DOM. */
 (function (root) {
   'use strict';
-  var VERSION = '1.6.1';
+  var VERSION = '1.7.0';
   var PARAMS = /*PARAMS*/{
     hlRate: 40, prevWRate: 0.7, shrinkPoss: 60, k2: 60, k3: 120, kft: 40,
     hlMin: 3, prevWMin: 0, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
     benchSdA: 12.5, benchSdK: -1.26, benchSdLo: 6, minSdLo: 3.5, minSdHi: 8.5, stUp: 0.7, stDn: 1.3,
-    usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.28, vsPow: 1.0, vsMin: 0.55,
+    usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.16, vsPow: 1.0, vsMin: 0.55,
     paceSd: 4.0, effSd: 0.06, effRho: 0.15, homeEdge: 1.3, ratingBlend: 0.5, paceShareMkt: 0, paceShareNoMkt: 0,
-    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
+    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, qTrimU: 0.12, qTrimLo: 15, qTrimHi: 25, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
     hlRot: 1.5, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, benchPrOff: 3, hlRateYoung: 40, youngG: 100,
     noNewsMiss: [1, 0.5, 0.3, 0.15, 0.1, 0.06],
     curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: -0.5,
@@ -4615,6 +4615,19 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
             ip = { mean: r2(ipm), sd: r2(Math.sqrt(Math.max(0, ips2 / np - ipm * ipm))), p10: r2(pct(ipa, np, 0.1)), p25: r2(pct(ipa, np, 0.25)), p50: r2(pct(ipa, np, 0.5)), p75: r2(pct(ipa, np, 0.75)), p90: r2(pct(ipa, np, 0.9)), p99: r2(pct(ipa, np, 0.99)) };
           }
           o.fpIfPlays = ip || { mean: 0, sd: 0, p10: 0, p25: 0, p50: 0, p75: 0, p90: 0, p99: 0 };
+          // Ceiling trim. For players projected 15+ the top of the range runs high: 25+ projected players beat their p90 about 6 to 7% of the time
+          // (target 10%) on Warehouse slates with and without a file and on the nightly backtest. p75 and up are pulled toward the median,
+          // 0% at a 15 point projection rising to qTrimU (12%) at 25+. Range loss: 2.6075 to 2.5954 with a file (174 slates), 2.3650 to 2.3610
+          // on the nightly backtest. A two-sided trim fit on Warehouse slates did not hold on the nightly rows and was dropped.
+          // Mean, floor, histogram and hit odds are not touched (hit odds have their own correction). fp.qRaw keeps the untrimmed numbers.
+          (function () {
+            var a = P.qTrimU; if (!(a > 0)) return;
+            [o.fp, o.fpIfPlays].forEach(function (Q) {
+              if (!Q || !(Q.p50 > 0)) return; var k = 1 - a * Math.max(0, Math.min(1, (Q.mean - P.qTrimLo) / (P.qTrimHi - P.qTrimLo))); if (!(k < 1)) return; var md = Q.p50;
+              Q.qRaw = { p75: Q.p75, p90: Q.p90 };
+              ['p75', 'p90', 'p95', 'p99'].forEach(function (f) { if (Q[f] != null) Q[f] = r2(md + k * (Q[f] - md)); });
+            });
+          })();
           o.pRot = r3(m.pRot); o.dnpCD = !!m.dnpCD; if (m.extMin != null) { o.extMin = m.extMin; o.simMin0 = r2(m.simMin0); }
           o.minIfPlays = np ? { mean: r2(mm.mean * nDone / np), p10: r2(pct(mm.so.subarray(z0), np, 0.1)), p90: r2(pct(mm.so.subarray(z0), np, 0.9)) } : { mean: 0, p10: 0, p90: 0 };
           var s = R.sum;
@@ -5852,7 +5865,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     { k: 'minS', l: 'Min', t: 'Average simulated minutes. If he plays, for anyone under 95% to play.', hm: 1 },
     { k: 'fileMin', l: 'File min', t: 'Minutes in the uploaded file. The sim moves most of the way to this number. A mark means the sim on its own was 6 or more minutes away.', need: 'fmin', h: function (r) { return r.fileMin == null ? NA : f(r.fileMin, 0) + (r.simMin0 != null && Math.abs(r.simMin0 - r.fileMin) >= 6 ? '<span class="mk" title="Sim alone had ' + f(r.simMin0) + ' minutes">sim ' + f(r.simMin0, 0) + '</span>' : ''); } },
     { k: 'proj', l: 'Proj', t: glossTip('Proj') },
-    { k: 'floor', l: 'Floor', t: '10th percentile outcome. One game in ten lands below it.' }, { k: 'ceil', l: 'Ceiling', t: '90th percentile outcome. One game in ten lands above it.' },
+    { k: 'floor', l: 'Floor', t: '10th percentile outcome. One game in ten lands below it.' }, { k: 'ceil', l: 'Ceiling', t: '90th percentile outcome. One game in ten lands above it. For players projected 15+ the sim ceiling ran high in testing (25+ projected players beat it 6 to 7% of the time), so it is pulled up to 12% toward the median.' },
     { k: 'x5', l: '5x odds', fx: 1, t: 'Number = share of sims at 5x salary or better. Bars = 4x, 5x, 6x, 7x; hover a bar for its share. Sorts on the 5x share.', h: strip },
     { k: 'val', l: 'Value', t: glossTip('Value'), d: 2 },
     { k: 'opt', l: 'Optimal %', t: glossTip('Optimal %') + ' Counted across all sims, including the ones where he sits.', p: 1, d: 1 },
@@ -6945,7 +6958,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   if (typeof module !== 'undefined' && module.exports) module.exports = NBAUI;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>globalThis.__NBA_BUILD__="2026-11-23 05:18 UTC";</script>
+<script>globalThis.__NBA_BUILD__="2026-11-23 06:46 UTC";</script>
 <script>/* NBA DK Sim Lab: controller. Glues NBAData, NBANews, NBAEngine, NBAUI. */
 (function () {
   'use strict';
