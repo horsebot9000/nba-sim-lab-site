@@ -3819,15 +3819,15 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 <script id="engine-src">/* NBA DK Sim Lab engine. Possession-level rotation simulation. No deps, no DOM. */
 (function (root) {
   'use strict';
-  var VERSION = '1.6.0';
+  var VERSION = '1.6.1';
   var PARAMS = /*PARAMS*/{
     hlRate: 40, prevWRate: 0.7, shrinkPoss: 60, k2: 60, k3: 120, kft: 40,
-    hlMin: 3, prevWMin: 0.5, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
+    hlMin: 3, prevWMin: 0, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
     benchSdA: 12.5, benchSdK: -1.26, benchSdLo: 6, minSdLo: 3.5, minSdHi: 8.5, stUp: 0.7, stDn: 1.3,
     usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.28, vsPow: 1.0, vsMin: 0.55,
     paceSd: 4.0, effSd: 0.06, effRho: 0.15, homeEdge: 1.3, ratingBlend: 0.5, paceShareMkt: 0, paceShareNoMkt: 0,
     stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
-    hlRot: 3, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, hlRateYoung: 40, youngG: 100,
+    hlRot: 1.5, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, benchPrOff: 3, hlRateYoung: 40, youngG: 100,
     noNewsMiss: [1, 0.5, 0.3, 0.15, 0.1, 0.06],
     curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: -0.5,
     pilotSims: 150, pilotPasses: 3, pilotFrac: 0.04, pilotMax: 400, postRescale: 0.03, maxCand: 16, fpScale: 1.0
@@ -4094,7 +4094,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       var kM = P.minPriorK;
       var mAll = (mA + kM * pm0) / (wA + kM);
       m.muAll = mAll;
-      var prS = Math.min(36, Math.max(mAll + 5, P.stPrior)), prB = Math.min(mAll, 28);
+      var prS = Math.min(36, Math.max(mAll + 5, P.stPrior)), prB = Math.max(0, Math.min(mAll, 28) - P.benchPrOff);   // bench minute prior sits below full-role minutes
       m.muS = (mS + 2 * prS) / (wS + 2); m.muB = (mB + 2 * prB) / (wB + 2);
       m.pStartHist = wSt > 0 ? sSt / wSt : 0;
       // Salary check on minutes. DraftKings prices carry information the box scores do not: players the sim liked at 6x+ salary ran
@@ -6945,7 +6945,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   if (typeof module !== 'undefined' && module.exports) module.exports = NBAUI;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>globalThis.__NBA_BUILD__="2026-11-18 07:20 UTC";</script>
+<script>globalThis.__NBA_BUILD__="2026-11-23 05:18 UTC";</script>
 <script>/* NBA DK Sim Lab: controller. Glues NBAData, NBANews, NBAEngine, NBAUI. */
 (function () {
   'use strict';
