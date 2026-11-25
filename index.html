@@ -3867,14 +3867,14 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
 <script id="engine-src">/* NBA DK Sim Lab engine. Possession-level rotation simulation. No deps, no DOM. */
 (function (root) {
   'use strict';
-  var VERSION = '1.8.0';
+  var VERSION = '1.9.0';
   var PARAMS = /*PARAMS*/{
     hlRate: 40, prevWRate: 0.7, shrinkPoss: 60, k2: 60, k3: 120, kft: 40,
     hlMin: 3, prevWMin: 0, minPriorK: 1.0, minSdA: 7.5, minSdK: -0.38, starterSdMult: 1, minCap: 44,
     benchSdA: 12.5, benchSdK: -1.26, benchSdLo: 6, minSdLo: 3.5, minSdHi: 8.5, stUp: 0.7, stDn: 1.3,
     usgExp: 1.35, astExp: 1.3, rebExp: 1.15, usgSd: 0.2, shotSd: 0.16, actSd: 0.16, vsPow: 1.0, vsMin: 0.55,
     paceSd: 4.0, effSd: 0.06, effRho: 0.15, homeEdge: 1.3, ratingBlend: 0.5, paceShareMkt: 0, paceShareNoMkt: 0,
-    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, qTrimU: 0.12, qTrimLo: 15, qTrimHi: 25, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
+    stick: 0.18, garb24: 36, garbW: 0, garbDeep: 1.8, garbCap: 1, garbT: 22, garbPull: 3, garbLow: 1.0, garbMid: 0.3, lowMin: 18, lowPriorMult: 0.55, stPrior: 25, startFix: 1, wowyFix: 1, wowyWin: 100, wowyK: 30, wowyG: 0, salShrink: 0, xCal: 1, extMinW: 0.75, extProjW: 0.8, optAnch: 1, xCalF: [-0.0695, 0.0197, 0.0181, -0.0537], qTrimU: 0.12, qTrimLo: 15, qTrimHi: 25, wowyStart: 1, marketBlend: 0, mktMinVol: 500, mktMinShare: 0.7, mktSims: 300, mktIters: 2, closeBonus: 0.5, closeOver: 0.8, closeMg: 7, garb30: 32, garb36: 28, garb42: 23, garb46: 18, otPull: 0.1,
     hlRot: 1.5, ftPerTrip: 2.27, b2bMinMult: 0.965, sameAbsW: 1, sameAbsN: 3, remPow: 1, remPow0: null, remHead: 2, benchPrOff: 3, hlRateYoung: 40, youngG: 100,
     noNewsMiss: [1, 0.5, 0.3, 0.15, 0.1, 0.06],
     curFade: 6, curFadeMin: 3, teamChgW: 0.5, teamChgWMin: 0.5, phantomRot: 0.03, stTrimW: 0.8, rubber: 0.4, trimPow: 0.4, topMinAdd: -0.5,
@@ -4697,8 +4697,15 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
             // Only for players 90%+ to play with 8+ projected minutes, the group it was fit on. hit.xRaw keeps the uncorrected share.
             if (P.xCal && sal > 0 && m.pPlay >= 0.9 && mm.mean >= 8) {
               H.xRaw = {}; var prev = 1, prevI = 1;
-              xMarks.forEach(function (k) { var c = XCAL[k]; H.xRaw[k] = H.x[k]; if (!c) return;
-                var v = Math.max(0, Math.min(1, c[1] + c[0] * H.x[k])), vi = Math.max(0, Math.min(1, c[1] + c[0] * H.xIfPlays[k]));
+              // With an uploaded projection the per-mark lines above over-correct cheap players: they were fit before the anchor, when the sim ran high
+              // on its value plays. On 174 Warehouse slates with the anchor on, players under $4,500 that the old correction put at 40%+ for 6x hit 57%
+              // (said 47%); at $8,000+ 6x was said 22.4% and hit 16.8%. Anchored players get one fitted shift in log-odds that depends on salary and
+              // on the mark: near zero under $4,500, growing with salary above 4.5x. Held-out half: said 51% hit 50% for the cheap group,
+              // log loss on 5x+ marks 0.3934 vs 0.3946 (old) and 0.3963 (none). Without a file the per-mark lines stay: the sim alone still runs high there.
+              var XF = rawMean != null ? P.xCalF : null, xf = function (pr, k) { if (!(pr > 0)) return 0; if (pr >= 1) return 1; var c_ = Math.max(0.003, Math.min(0.997, pr)), kp = Math.max(k - 4.5, 0), sk = sal / 1000 - 3;
+                return 1 / (1 + Math.exp(-(Math.log(c_ / (1 - c_)) + XF[0] + XF[1] * kp + XF[2] * sk + XF[3] * kp * sk))); };
+              xMarks.forEach(function (k) { var c = XCAL[k]; H.xRaw[k] = H.x[k]; if (!c && !XF) return;
+                var v = XF ? xf(H.x[k], +k) : Math.max(0, Math.min(1, c[1] + c[0] * H.x[k])), vi = XF ? xf(H.xIfPlays[k], +k) : Math.max(0, Math.min(1, c[1] + c[0] * H.xIfPlays[k]));
                 v = Math.min(v, prev); vi = Math.min(vi, prevI); prev = v; prevI = vi; H.x[k] = r3(v); H.xIfPlays[k] = r3(vi); });
             }
             o.hit = H;
@@ -4718,7 +4725,9 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
           outP[sp.dkId] = o;
           rot.push({ dkId: sp.dkId, name: sp.name, pStart: o.pStart, min: o.min.mean, minSd: o.min.sd });
           corrList.push({ id: sp.dkId, mn: mm.mean, fp: R.fp, mean: f.mean, sd: f.sd });
-          if (sal > 0 && f.mean > 0) optPool.push({ id: sp.dkId, sal: sal, elig: eligMask(sp), fp: R.fp, g: gi, mean: f.mean, p90: pct(f.so, nDone, 0.9) });   // p90 was f.p90 (undefined) before 2026-11-11
+          if (sal > 0 && f.mean > 0) // Optimal % uses the anchored outcomes when a file projection is loaded (optAnch). Against the real best lineup on 174 Warehouse slates:
+          // log loss 0.1398 anchored vs 0.1413 raw; under-$4,500 plays at 40%+ ownership were in the real best lineup 25.0%, anchored said 23.0%, raw 20.2%.
+          optPool.push({ id: sp.dkId, sal: sal, elig: eligMask(sp), fp: P.optAnch ? FPA : R.fp, fpRaw: R.fp, meanRaw: rawMean != null ? rawMean : f.mean, g: gi, mean: f.mean, p90: pct(f.so, nDone, 0.9) });   // p90 was f.p90 (undefined) before 2026-11-11
         }
         rot.sort(function (a, b) { return b.min - a.min; });
         var lu = [], totSeg = 0; T.lineups.forEach(function (c, mk) { lu.push([mk, c]); totSeg += c; });
@@ -4763,7 +4772,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
         players: optPool.filter(function (p) { return p.elig; }).map(function (p) {
           var sp = outP[p.id] || {}, sl = null;
           for (var q = 0; q < spAll.length && !sl; q++) if (spAll[q] && spAll[q].dkId === p.id) sl = spAll[q];
-          return { dkId: p.id, name: sp.name || null, team: sp.team || null, dkAvg: sl && sl.dkAvg > 0 ? +sl.dkAvg : null, salary: p.sal, elig: p.elig, g: p.g, fp: p.fp.length > simsDone ? p.fp.subarray(0, simsDone) : p.fp, mean: p.mean, p90: p.p90 };
+          return { dkId: p.id, name: sp.name || null, team: sp.team || null, dkAvg: sl && sl.dkAvg > 0 ? +sl.dkAvg : null, salary: p.sal, elig: p.elig, g: p.g, fp: (p.fpRaw || p.fp).length > simsDone ? (p.fpRaw || p.fp).subarray(0, simsDone) : (p.fpRaw || p.fp), mean: p.meanRaw != null ? p.meanRaw : p.mean, p90: p.p90 };   // raw sims and their raw mean: the contest sim does its own blend with the file and rescales by target / mean. v1.6.0 to v1.8.0 passed the anchored mean here with raw sims, so contest outcomes for a player were off by raw mean / anchored mean (too high where the sim was above the file).
         }) };
     } catch (e) { API.last = null; notes.push('contest retention failed: ' + String(e && e.message || e)); }
     if (onProgress) { try { onProgress(1, 'done'); } catch (e) { } }
@@ -5844,7 +5853,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       r.extProj = xb ? num(xb.proj) : null;
       r.fpRaw = num(p.fpRawMean); r.anch = r.fpRaw != null; r.rawSim = !r.anch ? null : r.cond && r.pPlay > 0 ? r.fpRaw / r.pPlay : r.fpRaw;   // sim before the pull to the file
       r.simExt = r.extProj != null && r.extProj > 0 && r.proj != null ? (r.anch ? r.rawSim : r.proj) - r.extProj : null;
-      r.lev = r.opt != null && r.own != null ? (r.opt - r.own) * 100 : null;
+      r.lev = null;   // set after all rows exist: needs the slate's ownership total
       var ru = ruleOf(id); r.rmin = ru.min; r.rmax = ru.max; r.rlock = ru.lock ? 1 : 0; r.rexcl = ru.exclude ? 1 : 0; r.rlx = ru.lock ? 2 : ru.exclude ? -1 : 0;
       r.game = team ? (r.opp ? team + (s.home === true ? ' v ' : s.home === false ? ' @ ' : ' / ') + r.opp : team) : '';
       var sIf = p.statsIfPlays && typeof p.statsIfPlays === 'object' ? p.statsIfPlays : null, sAll = p.stats && typeof p.stats === 'object' ? p.stats : {};
@@ -5858,6 +5867,12 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
       if (r.ceil != null && r.ceil > MAXP90) MAXP90 = r.ceil;
       return r;
     });
+    /* Leverage = Optimal % minus the optimal share his ownership normally earns. On 174 Warehouse slates the real best lineup held 1% of
+       players owned under 2%, 13.5% of 10 to 20% plays, 20% of 30 to 45% plays and 34% of 60%+ plays: optimal share grows like the square root
+       of ownership (fitted exponent 0.48 to 0.52). So fair share = sqrt(own), scaled to the 8 lineup spots. Optimal % minus Own % made every
+       chalk play look bad by construction. Players with leverage of +4 to +10 were in the real best lineup 13.6% of the time against a fair 9.2%. */
+    (function () { var tot = 0; ROWS.forEach(function (r) { if (r.own > 0) tot += Math.sqrt(r.own); });
+      ROWS.forEach(function (r) { r.fairOpt = r.own == null || !(tot > 0) ? null : Math.min(0.95, 8 * Math.sqrt(Math.max(0, r.own)) / tot); r.lev = r.opt != null && r.fairOpt != null ? (r.opt - r.fairOpt) * 100 : null; }); })();
     BYID = {}; HASKAL = false; var IT = ittMap(); ROWS.forEach(function (r) { BYID[r.id] = r; if (r.kPts != null) HASKAL = true; r.itt = IT[r.team] != null ? IT[r.team] : null; });
   }
   function histQ(h, q) {
@@ -5876,7 +5891,8 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     ['Value', 'Projected points per $1,000 of salary.'],
     ['Optimal %', 'Share of simulated slates where the player is in the highest-scoring legal lineup. Not ownership.'],
     ['Own %', 'Projected field ownership in a large-field GPP.'],
-    ['Leverage', 'Optimal % minus Own %, in points. Positive = the field is under-owned relative to the sim.'],
+    ['Leverage', 'Optimal % minus the optimal share a player at his ownership normally earns (Fair opt), in points. Chalk is not penalized for being chalk: a 60% play is fairly in the best lineup about a third of the time. Positive = the sim has him in the best lineup more often than his ownership pays for.'],
+    ['Fair opt', 'The share of best lineups a player at this ownership has earned on real slates: square root of ownership, scaled so the slate adds to 8 lineup spots. From the real best lineup on 174 Warehouse slates.'],
     ['Boom / Bust', 'Boom: chance of 5x salary plus 10 points or more. Bust: chance of under 4x salary.'],
     ['Play % / Start %', 'Chance he is active, from the injury report. Chance he starts.'],
     ['Play tag (Q 48%)', 'Status and Play %. Anyone under 95% shows if-plays numbers in the table. All-sims numbers stay in the player card and exports.'],
@@ -5921,6 +5937,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
     { k: 'own', l: 'Own %', lh: function () { return 'Own %' + (HASEXT ? '<span class="mk">file</span>' : '<span class="mk est">est</span>'); }, t: function () { return HASEXT ? 'Field ownership from ' + (EXT.fileName || 'the uploaded file') + '. Players missing from the file use the model estimate, marked est.' + (ROWS.some(function (r) { return r.ownRaw != null; }) ? ' File numbers are corrected (setting on the file chip): on 101 held-out slates the correction cut average error from 1.29 to 1.13 points and was closer on 99 of them. File own shows the original.' : '') : glossTip('Own %') + (get(S, 'own.calibrated') ? '' : ' Unvalidated estimate: not fitted to real contest ownership.'); }, need: 'own',
       h: function (r) { return pct(r.own, 1) + (r.ownSrc === 'proj' && r.own ? '<span class="mk" title="Estimated from the uploaded projections: the file has no ownership. About 1.5 points average error on held-out slates; chalk still runs about 5 points low.">proj</span>' : '') + (HASEXT && r.own != null && /news/.test(r.ownSrc || '') ? '<span class="mk" title="' + (r.ownSrc === 'file-news' ? 'OUT since the file: his file ownership went to teammates and the field' : 'File had him out; now active, so the model estimate is used') + '">news</span>' : HASEXT && r.own != null && r.ownSrc !== 'file' ? '<span class="mk est" title="Not in the file: model estimate">est</span>' : ''); } },
     { k: 'ownRaw', l: 'File own', t: 'Ownership exactly as the uploaded file has it, before the correction. The file ran high between 3 and 15% (6 to 10% plays were really 6.4% on average, shown 7.9%) and low above 30% (shown 36.1%, real 37.9%).', need: 'ownadj', h: function (r) { return r.ownRaw != null ? pct(r.ownRaw, 1) : '' ; } },
+    { k: 'fairOpt', l: 'Fair opt', t: function () { return glossTip('Fair opt'); }, need: 'own', off: true, h: function (r) { return r.fairOpt == null ? NA : pct(r.fairOpt, 1); } },
     { k: 'lev', l: 'Leverage', t: function () { return glossTip('Leverage') + (HASEXT ? ' Uses file ownership. Colored at 5 points or more either way.' : get(S, 'own.calibrated') ? ' Colored at 5 points or more either way.' : ' Built on unvalidated ownership, so it is not colored.'); }, need: 'own', h: function (r) { return r.lev == null ? NA : (get(S, 'own.calibrated') || r.ownSrc === 'file') && Math.abs(+r.lev.toFixed(1)) >= 5 ? '<span class="' + (r.lev > 0 ? 'pos' : 'neg') + '">' + signed(r.lev) + '</span>' : signed(r.lev); } },
     { k: 'extProj', l: 'Ext Proj', t: 'Points projection from the uploaded file. 0 = file has him not playing.', need: 'ext' },
     { k: 'rawSim', l: 'Raw sim', t: 'The sim projection before it is pulled toward the uploaded projection. Proj, Floor, Ceiling and the value odds all use the pulled number. On 174 slates since October 2025 the file alone missed by 7.43 points per player and the raw sim (with file minutes) by 7.72; raw sim plays at 5.5x or better came in 2.3 points under their number, the file was even.', need: 'anch' },
@@ -7011,7 +7028,7 @@ globalThis.HYPARQUET=HYPARQUET;if(typeof module!=='undefined'&&module.exports)mo
   if (typeof module !== 'undefined' && module.exports) module.exports = NBAUI;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>globalThis.__NBA_BUILD__="2026-11-23 11:57 UTC";</script>
+<script>globalThis.__NBA_BUILD__="2026-11-23 23:02 UTC";</script>
 <script>/* NBA DK Sim Lab: controller. Glues NBAData, NBANews, NBAEngine, NBAUI. */
 (function () {
   'use strict';
